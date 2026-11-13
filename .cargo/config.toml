@@ -1,0 +1,7 @@
+# Keep the machine usable while compiling: 4 of 16 cores.
+[build]
+jobs = 4
+
+[env]
+# Limits the engine's thread pool during tests.
+RAYON_NUM_THREADS = "4"

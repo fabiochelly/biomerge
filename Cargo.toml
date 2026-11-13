@@ -1,0 +1,28 @@
+[workspace]
+resolver = "3"
+members = ["crates/biomerge-core", "crates/biomerge-app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+
+# For run-dev.sh: nearly release speed, rebuilt in seconds. Outputs in target/fast/.
+[profile.fast]
+inherits = "release"
+lto = false
+codegen-units = 32
+incremental = true
+
+# Debug info and heavy optimization of dependencies are what fill the RAM.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 1
+debug = false

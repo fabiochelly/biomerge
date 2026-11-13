@@ -1,0 +1,27 @@
+[package]
+name = "biomerge-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "biomerge"
+path = "src/main.rs"
+
+[dependencies]
+biomerge-core = { path = "../biomerge-core" }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# Same renderer as csvfab: glow is lighter than wgpu to build and to run.
+eframe = { version = "0.37.0", default-features = false, features = ["default_fonts", "glow", "wayland", "x11", "clipboard", "persistence"] }
+egui = "0.37.0"
+egui_extras = { version = "0.37.0", default-features = false, features = ["svg"] }
+rayon = "1.12.0"
+rfd = "0.17.2"
+ttf-parser = "0.25"
+
+[dev-dependencies]
+egui_kittest = { version = "0.37.0", features = ["wgpu", "snapshot"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+tempfile = "3"
+# Builds .docx and .odt fixtures, with the features the engine already compiles.
+zip = { version = "9.1", default-features = false, features = ["deflate-flate2-zlib-rs"] }
