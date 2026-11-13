@@ -18,10 +18,12 @@ const UI_STACK: &[&str] = &["Inter", "Roboto", "Noto Sans", "Liberation Sans", "
 
 pub const UI_MEDIUM: &str = "ui-medium";
 pub const UI_SEMIBOLD: &str = "ui-semibold";
+pub const UI_BOLD: &str = "ui-bold";
 
 const FONTCONFIG_REGULAR: f32 = 80.0;
 const FONTCONFIG_MEDIUM: f32 = 100.0;
 const FONTCONFIG_SEMIBOLD: f32 = 180.0;
+const FONTCONFIG_BOLD: f32 = 200.0;
 
 #[derive(Clone, Debug, PartialEq)]
 struct Face {
@@ -97,7 +99,9 @@ fn best<'a>(faces: &'a [Face], family: &str, weight: f32) -> Option<&'a Face> {
 }
 
 fn css_weight(fontconfig: f32) -> f32 {
-    if fontconfig >= FONTCONFIG_SEMIBOLD {
+    if fontconfig >= FONTCONFIG_BOLD {
+        700.0
+    } else if fontconfig >= FONTCONFIG_SEMIBOLD {
         600.0
     } else if fontconfig >= FONTCONFIG_MEDIUM {
         500.0
@@ -152,6 +156,7 @@ pub fn install(ctx: &egui::Context, code_family: Option<&str>) {
     let has_ui = add("ui", ui_face(FONTCONFIG_REGULAR), FONTCONFIG_REGULAR);
     let has_medium = add("ui-medium-face", ui_face(FONTCONFIG_MEDIUM), FONTCONFIG_MEDIUM);
     let has_semibold = add("ui-semibold-face", ui_face(FONTCONFIG_SEMIBOLD), FONTCONFIG_SEMIBOLD);
+    let has_bold = add("ui-bold-face", ui_face(FONTCONFIG_BOLD), FONTCONFIG_BOLD);
 
     let chain = |first: &[(bool, &str)], base: &[String]| -> Vec<String> {
         first
@@ -171,6 +176,10 @@ pub fn install(ctx: &egui::Context, code_family: Option<&str>) {
         (
             FontFamily::Name(UI_SEMIBOLD.into()),
             chain(&[(has_semibold, "ui-semibold-face"), (has_ui, "ui")], &ui_base),
+        ),
+        (
+            FontFamily::Name(UI_BOLD.into()),
+            chain(&[(has_bold, "ui-bold-face"), (has_semibold, "ui-semibold-face"), (has_ui, "ui")], &ui_base),
         ),
     ];
     for (family, list) in families {

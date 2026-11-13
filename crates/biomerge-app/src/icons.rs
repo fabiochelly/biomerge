@@ -24,7 +24,8 @@ macro_rules! icons {
 
 icons! {
     AccentE = "accent-e", AccentMark = "accent-mark", Align = "align", ArrowDown = "arrow-down", ArrowLeft = "arrow-left", ArrowRight = "arrow-right",
-    ArrowUp = "arrow-up", Braces = "braces", Case = "case", ChevronRight = "chevron-right", ColorScale = "color-scale",
+    ArrowUp = "arrow-up", Braces = "braces", Case = "case", Check = "check", ChevronDown = "chevron-down", ChevronRight = "chevron-right", ChevronUp = "chevron-up", ColorScale = "color-scale",
+    MergeTab = "merge-tab", Moon = "moon", Ribbon = "ribbon", Sun = "sun", TextCompare = "text-compare",
     Combine = "combine", Command = "command", Compare = "compare", Copy = "copy", CopyRight = "copy-right", Cross = "cross", Ellipsis = "ellipsis", EyeOff = "eye-off", File = "file", FileText = "file-text", Folder = "folder",
     FolderOpen = "folder-open",
     Fold = "fold", Font = "font", Funnel = "funnel", GitBranch = "git-branch", GitMerge = "git-merge", Goto = "goto", Hamburger = "hamburger", History = "history", Ignore = "ignore", Info = "info",

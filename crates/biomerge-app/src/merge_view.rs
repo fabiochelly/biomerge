@@ -32,23 +32,19 @@ use rayon::prelude::*;
 use crate::icons::Icon;
 use crate::scroll::{Position, Scroller};
 use crate::sync::SyncMap;
+use crate::panes::{self, CODE_PADDING};
 use crate::text_view::{
-    ARROW_MARGIN, ARROW_SIZE, CARD_PADDING, CARD_RADIUS, CARET_MARGIN_ROWS, CARET_WIDTH, CARET_BLINK_SECONDS,
-    CENTER_GAP, GUTTER_PADDING, HEADER_HEIGHT, LinePaint, OUTER_MARGIN, OVERVIEW_WIDTH, SearchMode, SearchTarget,
-    StatusItem, TEXT_PADDING, UNDO_MERGE_SECONDS, block_button, caret_motion, deleted_range, line_at, paint_card,
-    paint_link, paint_text_line, snap,
+    ARROW_MARGIN, ARROW_SIZE, CARET_MARGIN_ROWS, CARET_WIDTH, CARET_BLINK_SECONDS, GUTTER_PADDING, LinePaint,
+    SearchMode, SearchTarget, StatusItem, TEXT_PADDING, UNDO_MERGE_SECONDS, WRAP_MARGIN, block_button, caret_motion,
+    deleted_range, line_at, paint_link, paint_text_line, snap,
 };
-use crate::theme::{DEFAULT_CODE_SIZE, DocPalette, Tint, UiPalette, line_height, mix};
+use crate::theme::{DEFAULT_CODE_SIZE, DocPalette, LinkStyle, Look, Tint, UiPalette, line_height, mix};
 use crate::widgets::{self, Badge, Item, PathAction, PathBar, menu_frame, separator};
 
 /// The panes, left to right.
 const LEFT: usize = 0;
 const CENTRE: usize = 1;
 const RIGHT: usize = 2;
-/// The right pane's arrows stand on its left, before the line numbers; its wrap marks keep a
-/// narrower margin on its right. The text is as wide as in the other panes.
-const RIGHT_ARROW_ROOM: f32 = 34.0;
-const RIGHT_WRAP_ROOM: f32 = ARROW_MARGIN - RIGHT_ARROW_ROOM;
 /// A chunk this long on one side is not compared word by word: its frame says enough.
 const MAX_SPAN_LINES: usize = 5_000;
 /// Lines of the base shown in a conflict's tooltip.
@@ -217,6 +213,8 @@ struct Pane {
 #[derive(Clone, Copy)]
 struct Geometry {
     view: Rect,
+    /// Where rows may paint: the view and the padding around it.
+    rows: Rect,
     panes: [Pane; 3],
     cards: [Rect; 3],
     overview: Rect,
@@ -1711,10 +1709,13 @@ impl MergeTab {
         }
     }
 
-    fn paint_rows(&self, ui: &Ui, painter: &Painter, geometry: Geometry, doc: &DocPalette) {
+    fn paint_rows(&self, ui: &Ui, painter: &Painter, geometry: Geometry, look: &Look) {
         let Some(merge) = &self.merge else {
             return;
         };
+        let doc = &look.doc;
+        let above = (geometry.view.top() - geometry.rows.top()) as f64;
+        let below = (geometry.rows.bottom() - geometry.view.bottom()) as f64;
         let view = geometry.view;
         let line_height = geometry.line_height;
         let number_font = FontId::new(self.code_size - 1.0, FontFamily::Monospace);
@@ -1723,16 +1724,16 @@ impl MergeTab {
         for (pane_index, pane) in geometry.panes.iter().enumerate() {
             let version = self.version(pane_index);
             let document = merge.document(version);
-            let clip_rect = pane.rect.expand2(vec2(0.0, CARD_PADDING));
+            let clip_rect = Rect::from_x_y_ranges(pane.rect.x_range(), geometry.rows.y_range());
             let clip = painter.with_clip_rect(clip_rect);
             let text_clip = painter.with_clip_rect(Rect::from_min_max(
                 pos2(pane.text_x - TEXT_PADDING, clip_rect.top()),
-                pos2(pane.text_right + ARROW_MARGIN.min(RIGHT_WRAP_ROOM + 4.0), clip_rect.bottom()),
+                pos2(pane.text_right + WRAP_MARGIN, clip_rect.bottom()),
             ));
             let scroll = self.pane_scroll[pane_index];
             let offsets = &self.layout.offsets[pane_index];
-            let first = ((scroll - CARD_PADDING as f64).max(0.0) / line_height as f64) as u32;
-            let last = ((scroll + (view.height() + CARD_PADDING) as f64) / line_height as f64) as u32 + 1;
+            let first = ((scroll - above).max(0.0) / line_height as f64) as u32;
+            let last = ((scroll + view.height() as f64 + below) / line_height as f64) as u32 + 1;
             let styles = &self.styles[slot(version)];
             let mut chunk_index = merge.chunk_at(version, line_at(offsets, first) as u32).unwrap_or(0);
             for line in line_at(offsets, first)..document.len() {
@@ -1748,18 +1749,23 @@ impl MergeTab {
                 let top = snap(painter, view.top() as f64 + start as f64 * line_height as f64 - scroll);
                 let bottom = top + extent.len() as f32 * line_height;
                 let rect = Rect::from_x_y_ranges(pane.rect.x_range(), top..=bottom);
-                // The right pane's arrows stand on its gutter, which runs to the card's edge.
                 let gutter = Rect::from_x_y_ranges(pane.rect.left()..=pane.text_x - TEXT_PADDING, top..=bottom);
-                if let Some(tint) = self.tint(chunk, version, doc) {
-                    clip.rect_filled(rect, 0.0, tint.zone);
-                    clip.rect_filled(gutter, 0.0, tint.gutter);
+                let tint = self.tint(chunk, version, doc);
+                if let Some(tint) = tint {
+                    let current = self.current == Some(chunk_index);
+                    clip.rect_filled(rect, 0.0, if current { tint.current } else { tint.zone });
+                    if tint.gutter != tint.zone {
+                        clip.rect_filled(gutter, 0.0, tint.gutter);
+                    }
+                    let bar_x = panes::line_bar_x(look, pane.rect, gutter.right() - GUTTER_PADDING);
+                    panes::paint_line_bar(&clip, look, bar_x, top, bottom, tint.mark);
                 }
                 clip.text(
                     pos2(gutter.right() - GUTTER_PADDING, top + line_height / 2.0),
                     Align2::RIGHT_CENTER,
                     line + 1,
                     number_font.clone(),
-                    doc.line_number,
+                    if tint.is_some() { doc.line_number_on } else { doc.line_number },
                 );
                 let text = document.lines[line].text.as_str();
                 let spans = self.spans.get(&(chunk_index, version));
@@ -1794,9 +1800,11 @@ impl MergeTab {
         }
     }
 
-    /// Frames, links, the arrows that take a side and the action button of each chunk in view.
-    /// Returns what was clicked, and the action buttons whose menu may be open.
-    fn paint_frames(&self, ui: &Ui, painter: &Painter, geometry: Geometry, doc: &DocPalette) -> (Option<ChunkAction>, Vec<(usize, egui::Response)>) {
+    /// Frames or ribbons, links, the arrows that take a side and the action button of the chunk
+    /// being worked on, or of the one under the pointer. Returns what was clicked, and the
+    /// action buttons whose menu may be open.
+    fn paint_frames(&self, ui: &Ui, painter: &Painter, geometry: Geometry, look: &Look) -> (Option<ChunkAction>, Vec<(usize, egui::Response)>) {
+        let doc = &look.doc;
         let mut clicked = None;
         let mut menus = Vec::new();
         let Some(merge) = &self.merge else {
@@ -1804,16 +1812,20 @@ impl MergeTab {
         };
         let view = geometry.view;
         let line_height = geometry.line_height as f64;
-        let clip = painter.with_clip_rect(view.expand2(vec2(0.0, CARD_PADDING)));
+        let clip = painter.with_clip_rect(geometry.rows);
         let bottom_edge = clip.clip_rect().bottom();
         let versions = self.versions();
         let y_at = |pane: usize, visual: u32| snap(painter, view.top() as f64 + visual as f64 * line_height - self.pane_scroll[pane]);
         let y_of = |pane: usize, line: u32| y_at(pane, self.layout.offsets[pane].get(line as usize).copied().unwrap_or(0));
         let chunks = merge.chunks();
         let first = self.layout.blocks.partition_point(|&chunk| {
-            (0..3).map(|pane| y_of(pane, chunks[chunk].range(versions[pane]).end)).fold(f32::MIN, f32::max) < view.top()
+            (0..3).map(|pane| y_of(pane, chunks[chunk].range(versions[pane]).end)).fold(f32::MIN, f32::max) < geometry.rows.top()
         });
         let editing = !self.show_base;
+        let ribbons = look.links == LinkStyle::Ribbons;
+        let cards = geometry.cards;
+        let gaps = [(cards[LEFT].right(), cards[CENTRE].left()), (cards[CENTRE].right(), cards[RIGHT].left())];
+        let pointer = ui.ctx().pointer_hover_pos().filter(|_| ui.rect_contains_pointer(geometry.rows));
         for &index in &self.layout.blocks[first..] {
             let chunk = &chunks[index];
             let ranges = versions.map(|version| chunk.range(version));
@@ -1829,7 +1841,9 @@ impl MergeTab {
                 (false, false) => Stroke::new(1.0, doc.frame),
             };
             let mut anchors = [0.0; 3];
+            let mut spans = [(0.0, 0.0); 3];
             let mut tops = [0.0; 3];
+            let mut hovered = false;
             for pane in 0..3 {
                 let rect = geometry.panes[pane].rect;
                 let frame_top = y_of(pane, ranges[pane].start);
@@ -1840,52 +1854,72 @@ impl MergeTab {
                         _ => frame_top,
                     };
                     let y = clip.round_to_pixel_center(visual);
-                    clip.hline(rect.x_range(), y, stroke);
+                    let rule = if ribbons { Stroke::new(if current { 1.5 } else { 1.0 }, tint.mark) } else { stroke };
+                    clip.hline(rect.x_range(), y, rule);
                     anchors[pane] = y;
+                    spans[pane] = (y, y);
                     tops[pane] = (y - ARROW_SIZE.y / 2.0).max(view.top() + 2.0);
+                    hovered |= pointer.is_some_and(|p| rect.x_range().contains(p.x) && (p.y - y).abs() <= 4.0);
                 } else {
                     let last = ranges[pane].end as usize - 1;
                     let frame_bottom = y_at(pane, self.line_extent(pane, last).end);
-                    clip.rect_stroke(Rect::from_x_y_ranges(rect.x_range(), frame_top..=frame_bottom), 0.0, stroke, StrokeKind::Inside);
+                    let frame = Rect::from_x_y_ranges(rect.x_range(), frame_top..=frame_bottom);
+                    if !ribbons {
+                        clip.rect_stroke(frame, 0.0, stroke, StrokeKind::Inside);
+                    }
                     let (low, high) = (frame_top.max(view.top()), frame_bottom.min(view.bottom()));
                     anchors[pane] = if low < high { (low + high) / 2.0 } else { (frame_top + frame_bottom) / 2.0 };
+                    spans[pane] = (frame_top, frame_bottom);
                     let inset = (geometry.line_height - ARROW_SIZE.y) / 2.0;
                     tops[pane] = (frame_top + inset).max(view.top() + 2.0).min(frame_bottom - ARROW_SIZE.y - inset);
+                    hovered |= pointer.is_some_and(|p| frame.contains(p));
                 }
             }
-            for (from, to) in [(LEFT, CENTRE), (CENTRE, RIGHT)] {
-                paint_link(&clip, pos2(geometry.panes[from].rect.right(), anchors[from]), pos2(geometry.panes[to].rect.left(), anchors[to]), stroke);
+            let mark = self.tint(chunk, Version::Result, &look.gap).unwrap_or(look.gap.change).mark;
+            for (gap, (from, to)) in gaps.into_iter().zip([(LEFT, CENTRE), (CENTRE, RIGHT)]) {
+                if ribbons {
+                    panes::paint_ribbon(&clip, gap, spans[from], spans[to], mark, look.ui.ribbon, current);
+                } else {
+                    let link = if current || unresolved { stroke } else { Stroke::new(1.0, look.gap.frame) };
+                    paint_link(&clip, pos2(gap.0, anchors[from]), pos2(gap.1, anchors[to]), link);
+                }
+                hovered |= pointer.is_some_and(|p| panes::ribbon_contains(gap, spans[from], spans[to], p));
             }
             if !editing {
+                continue;
+            }
+            let left_rect = panes::arrow_rect(look, gaps[0], true, anchors[LEFT]);
+            let right_rect = panes::arrow_rect(look, gaps[1], false, anchors[RIGHT]);
+            let menu_rect = Rect::from_min_size(pos2(geometry.panes[CENTRE].rect.right() - ARROW_SIZE.x - 7.0, tops[CENTRE]), ARROW_SIZE);
+            let combine_rect = menu_rect.translate(vec2(-(ARROW_SIZE.x + 4.0), 0.0));
+            hovered |= pointer.is_some_and(|p| [left_rect, right_rect, menu_rect, combine_rect].iter().any(|rect| rect.contains(p)));
+            // Buttons for the chunk being worked on, and for the one under the pointer.
+            if !(current || hovered) {
                 continue;
             }
             let fits = |rect: Rect| rect.top() >= view.top() && rect.bottom() <= view.bottom();
             let same = |version: Version| lines_equal(merge, chunk, version, Version::Result);
             // Taking a side is offered where it would change the result.
-            let left_rect = Rect::from_min_size(pos2(geometry.panes[LEFT].rect.right() - ARROW_SIZE.x - 7.0, tops[LEFT]), ARROW_SIZE);
             if fits(left_rect) && !same(Version::Left) {
                 let id = ui.scope_id().with(("take-left", index));
                 let tip = "Prendre la gauche (Ctrl+→)";
-                if block_button(ui, &clip, left_rect, id, Icon::ArrowRight, false, tip, tint, doc).on_hover_text(tip).clicked() {
+                if panes::arrow_button(ui, &clip, look, left_rect, id, false, tip).on_hover_text(tip).clicked() {
                     clicked = Some(ChunkAction::Resolve(index, Resolution::Left));
                 }
             }
-            let right_rect = Rect::from_min_size(pos2(geometry.panes[RIGHT].rect.left() + 7.0, tops[RIGHT]), ARROW_SIZE);
             if fits(right_rect) && !same(Version::Right) {
                 let id = ui.scope_id().with(("take-right", index));
                 let tip = "Prendre la droite (Ctrl+←)";
-                if block_button(ui, &clip, right_rect, id, Icon::ArrowRight, true, tip, tint, doc).on_hover_text(tip).clicked() {
+                if panes::arrow_button(ui, &clip, look, right_rect, id, true, tip).on_hover_text(tip).clicked() {
                     clicked = Some(ChunkAction::Resolve(index, Resolution::Right));
                 }
             }
-            let menu_rect = Rect::from_min_size(pos2(geometry.panes[CENTRE].rect.right() - ARROW_SIZE.x - 7.0, tops[CENTRE]), ARROW_SIZE);
             if fits(menu_rect) {
                 let id = ui.scope_id().with(("chunk-menu", index));
                 let response = block_button(ui, &clip, menu_rect, id, Icon::Ellipsis, false, "Actions du bloc", tint, doc);
                 let response = response.on_hover_ui(|ui| peek(ui, merge, index, doc));
                 menus.push((index, response));
                 if unresolved && chunk.combinable {
-                    let combine_rect = menu_rect.translate(vec2(-(ARROW_SIZE.x + 4.0), 0.0));
                     let id = ui.scope_id().with(("combine", index));
                     let response = block_button(ui, &clip, combine_rect, id, Icon::Combine, false, "Combiner les deux côtés", tint, doc)
                         .on_hover_ui(|ui| proposal(ui, merge, index, doc));
@@ -1898,36 +1932,36 @@ impl MergeTab {
         (clicked, menus)
     }
 
-    fn paint_overview(&mut self, ui: &mut Ui, painter: &Painter, geometry: Geometry, chrome: &UiPalette, doc: &DocPalette) {
+    fn paint_overview(&mut self, ui: &mut Ui, painter: &Painter, geometry: Geometry, look: &Look) {
         let rect = geometry.overview;
-        painter.rect_filled(rect, 4.0, chrome.panel);
         let total = (self.layout.sync.total() as f32).max(1.0);
         let scale = rect.height() / total;
+        let mut marks = Vec::new();
         if let Some(merge) = &self.merge {
-            let mut last_bottom = f32::MIN;
             for (&index, extent) in self.layout.blocks.iter().zip(&self.layout.sync.blocks) {
-                let y0 = rect.top() + extent.start as f32 * scale;
-                let y1 = (rect.top() + extent.end as f32 * scale).max(y0 + 2.0);
-                if y1 <= last_bottom {
-                    continue;
-                }
                 let chunk = &merge.chunks()[index];
-                let tint = self.tint(chunk, Version::Result, doc).unwrap_or(doc.change);
-                painter.rect_filled(Rect::from_x_y_ranges(rect.x_range(), y0.max(last_bottom)..=y1), 0.0, tint.mark);
-                last_bottom = y1;
+                let mark = self.tint(chunk, Version::Result, &look.gap).unwrap_or(look.gap.change).mark;
+                marks.push((rect.top() + extent.start as f32 * scale, rect.top() + extent.end as f32 * scale, mark));
             }
         }
         let line = geometry.line_height;
         let thumb_top = rect.top() + (self.scroll as f32 / line) * scale;
         let thumb_height = (geometry.view.height() / line * scale).max(14.0);
         let thumb = Rect::from_min_size(pos2(rect.left(), thumb_top), vec2(rect.width(), thumb_height.min(rect.height())));
-        painter.rect(thumb, 3.0, chrome.text_dim.gamma_multiply(0.22), Stroke::new(1.0, chrome.text_dim), StrokeKind::Inside);
+        panes::paint_overview(painter, look, rect, &marks, thumb);
         let response = ui.interact(rect, ui.scope_id().with("merge-overview"), Sense::click_and_drag());
         if let Some(pos) = response.interact_pointer_pos() {
             let ratio = ((pos.y - rect.top() - thumb_height / 2.0) / rect.height()).max(0.0);
             let max = self.layout.sync.max_scroll((geometry.view.height() / line) as f64) * line as f64;
             self.scroll = (ratio as f64 * total as f64 * line as f64).min(max);
         }
+    }
+
+    /// The change being worked on, counted from one, and how many there are.
+    pub fn block_rank(&self) -> Option<(usize, usize)> {
+        let current = self.current?;
+        let rank = self.layout.blocks.binary_search(&current).ok()?;
+        Some((rank + 1, self.layout.blocks.len()))
     }
 
     fn handle_scroll(&mut self, ui: &Ui, response: &egui::Response, geometry: Geometry) {
@@ -1973,7 +2007,8 @@ impl MergeTab {
         self.scroll = self.scroll.clamp(0.0, max_y);
     }
 
-    fn headers(&mut self, ui: &mut Ui, chrome: &UiPalette, cards: [Rect; 3]) -> bool {
+    fn headers(&mut self, ui: &mut Ui, look: &Look, headers: [Rect; 3]) -> bool {
+        let hues = look.ui.hues;
         let mut save = false;
         let Some(merge) = &self.merge else {
             return save;
@@ -1982,7 +2017,7 @@ impl MergeTab {
         let unresolved = merge.unresolved_count();
         for pane in 0..3 {
             let version = self.version(pane);
-            let header = Rect::from_min_size(cards[pane].min, vec2(cards[pane].width(), HEADER_HEIGHT));
+            let header = headers[pane];
             let (path, title) = self.pane_identity(merge, version);
             let mut badges = Vec::new();
             if merge.is_missing(version) {
@@ -2000,15 +2035,22 @@ impl MergeTab {
                 badges.push(Badge::new("inconnu", "Le fichier en conflit n'a pas de section ||||||| : l'ancêtre n'est pas connu"));
             }
             let mut input = path.display().to_string();
+            let tint = match version {
+                Version::Left => hues.violet,
+                Version::Result => hues.pink,
+                Version::Base => hues.slate,
+                Version::Right => hues.green,
+            };
             let action = widgets::path_bar(
                 ui,
-                chrome,
+                look,
                 ui.scope_id().with(("merge-header", pane)),
                 header,
                 PathBar {
                     path: &path,
                     input: &mut input,
                     icon: if version == Version::Result { Icon::GitMerge } else if version == Version::Base { Icon::History } else { Icon::File },
+                    tint,
                     dirty: version == Version::Result && dirty,
                     label: ["Version locale", if self.show_base { "Ancêtre commun" } else { "Résultat" }, "Version distante"][pane],
                     browse_tip: "",
@@ -2056,7 +2098,8 @@ impl MergeTab {
         }
     }
 
-    pub fn show(&mut self, ui: &mut Ui, chrome: &UiPalette, doc: &DocPalette, code_size: f32) {
+    pub fn show(&mut self, ui: &mut Ui, look: &Look, code_size: f32) {
+        let chrome = &look.ui;
         let ctx = ui.ctx().clone();
         self.poll(&ctx);
         self.set_code_size(code_size);
@@ -2065,51 +2108,49 @@ impl MergeTab {
         let painter = ui.painter_at(available);
         painter.rect_filled(available, 0.0, chrome.background);
 
-        let content = available.shrink(OUTER_MARGIN);
-        let pane_width = ((content.width() - CENTER_GAP * 2.0 - OVERVIEW_WIDTH - OUTER_MARGIN) / 3.0).max(120.0);
-        let xs = [0.0, 1.0, 2.0].map(|index| content.left() + index * (pane_width + CENTER_GAP));
-        let cards = xs.map(|x| Rect::from_min_size(pos2(x, content.top()), vec2(pane_width, content.height())));
-        for card in cards {
-            paint_card(&painter, card, doc);
-        }
-        if self.headers(ui, chrome, cards) {
+        let (laid, overview) = panes::layout(available, look, 3, true);
+        let laid = [laid[0], laid[1], laid[2]];
+        panes::paint_cards(&painter, look, &laid);
+        let cards = laid.map(|pane| pane.card);
+        if self.headers(ui, look, laid.map(|pane| pane.header)) {
             if let Err(error) = self.save() {
                 self.message = Some(error);
             }
         }
+        let rows = Rect::from_min_max(
+            pos2(cards[0].left(), laid[0].code.top()),
+            pos2(cards[2].right(), panes::row_clip(look, laid[0].code).bottom()),
+        );
         let view = Rect::from_min_max(
-            pos2(xs[0], content.top() + HEADER_HEIGHT + CARD_PADDING),
-            pos2(xs[2] + pane_width, content.bottom() - CARD_PADDING),
+            pos2(rows.left(), rows.top() + CODE_PADDING),
+            pos2(rows.right(), laid[0].code.bottom() - CODE_PADDING),
         );
         let font = FontId::new(code_size, FontFamily::Monospace);
         let char_width = ctx.fonts_mut(|fonts| fonts.glyph_width(&font, '0')).max(1.0);
         let longest = (0..3).filter_map(|pane| self.doc(pane).map(Document::len)).max().unwrap_or(0);
         let digits = (longest.max(1).ilog10() as usize + 1).max(3);
-        let gutter = digits as f32 * char_width + GUTTER_PADDING * 2.0;
+        let gutter = digits as f32 * char_width + GUTTER_PADDING * 2.0 + if look.metrics.bar_at_edge { 4.0 } else { 0.0 };
+        // The arrows taking a side stand in the gaps; the centre pane keeps room on its right
+        // for the action buttons of its blocks.
         let make_pane = |pane: usize| {
-            let rect = Rect::from_min_size(pos2(xs[pane], view.top()), vec2(pane_width, view.height()));
-            let (gutter_left, right_room) = if pane == RIGHT { (rect.left() + RIGHT_ARROW_ROOM, RIGHT_WRAP_ROOM) } else { (rect.left(), ARROW_MARGIN) };
-            Pane { rect, text_x: gutter_left + gutter + TEXT_PADDING, text_right: rect.right() - right_room }
+            let rect = Rect::from_x_y_ranges(cards[pane].x_range(), view.y_range());
+            let right_room = if pane == CENTRE { ARROW_MARGIN } else { WRAP_MARGIN };
+            Pane { rect, text_x: rect.left() + gutter + TEXT_PADDING, text_right: rect.right() - right_room }
         };
         let panes = [make_pane(LEFT), make_pane(CENTRE), make_pane(RIGHT)];
         let geometry = Geometry {
             view,
+            rows,
             panes,
             cards,
-            overview: Rect::from_min_size(pos2(view.right() + OUTER_MARGIN, content.top()), vec2(OVERVIEW_WIDTH, content.height())),
+            overview,
             line_height: self.layout.line_height,
             char_width,
         };
-        let columns = (((panes[0].text_right - panes[0].text_x) / char_width) as usize).max(8);
+        let columns = (((panes[1].text_right - panes[1].text_x) / char_width) as usize).max(8);
         self.geometry = Some(geometry);
-        let border = |painter: &Painter| {
-            for card in cards {
-                widgets::mask_bottom_corners(painter, card, CARD_RADIUS as f32, chrome.background);
-                painter.rect_stroke(card, CARD_RADIUS, Stroke::new(1.0, chrome.border), StrokeKind::Inside);
-            }
-        };
         if self.merge.is_none() {
-            border(&painter);
+            panes::finish_cards(&painter, look, &laid);
             let (text, color) = match &self.error {
                 Some(error) => (error.as_str(), chrome.error),
                 None => ("Fusion des trois versions…", chrome.text_dim),
@@ -2177,10 +2218,10 @@ impl MergeTab {
         }
 
         self.prepare_spans(geometry);
-        self.paint_rows(ui, &painter, geometry, doc);
-        let (mut clicked, menus) = self.paint_frames(ui, &painter, geometry, doc);
-        self.paint_overview(ui, &painter, geometry, chrome, doc);
-        border(&painter);
+        self.paint_rows(ui, &painter, geometry, look);
+        let (mut clicked, menus) = self.paint_frames(ui, &painter, geometry, look);
+        self.paint_overview(ui, &painter, geometry, look);
+        panes::finish_cards(&painter, look, &laid);
 
         if let Some(merge) = &self.merge {
             for (chunk, button) in &menus {

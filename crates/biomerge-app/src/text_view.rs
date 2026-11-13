@@ -31,24 +31,19 @@ use crate::icons::{self, Icon};
 use crate::scroll::{Position, Scroller};
 use crate::sync::SyncMap;
 use crate::formats;
-use crate::theme::{DEFAULT_CODE_SIZE, DocPalette, Tint, UiPalette, line_height, mix};
+use crate::panes::{self, CODE_PADDING};
+use crate::theme::{Chrome, DEFAULT_CODE_SIZE, DocPalette, LinkStyle, Look, Tint, UiPalette, line_height, mix};
 use crate::widgets::{self, Badge, PathAction, PathBar};
 
-pub(crate) const OUTER_MARGIN: f32 = 12.0;
-pub(crate) const HEADER_HEIGHT: f32 = 44.0;
-/// Between the panes, where the links of the blocks run.
-pub(crate) const CENTER_GAP: f32 = 36.0;
-pub(crate) const OVERVIEW_WIDTH: f32 = 12.0;
 pub(crate) const GUTTER_PADDING: f32 = 12.0;
 pub(crate) const TEXT_PADDING: f32 = 12.0;
-/// Reserved on the right of each pane for the wrap marks and the arrows.
+/// Reserved on the right of a pane for the action buttons of a merge's blocks and the wrap marks.
 pub(crate) const ARROW_MARGIN: f32 = 58.0;
+/// Reserved on the right of a pane for the wrap marks alone: the arrows stand in the gaps.
+pub(crate) const WRAP_MARGIN: f32 = 26.0;
 pub(crate) const ARROW_SIZE: egui::Vec2 = vec2(24.0, 18.0);
 pub(crate) const ARROW_ICON: f32 = 13.0;
 pub(crate) const WRAP_ICON: f32 = 12.0;
-/// Empty space inside a card, above the first row and below the last one.
-pub(crate) const CARD_PADDING: f32 = 8.0;
-pub(crate) const CARD_RADIUS: u8 = 10;
 const SWAP_BUTTON: f32 = 28.0;
 pub(crate) const CARET_WIDTH: f32 = 1.6;
 pub(crate) const CARET_BLINK_SECONDS: f64 = 0.53;
@@ -322,7 +317,11 @@ struct Pane {
 #[derive(Clone, Copy)]
 struct Geometry {
     view: Rect,
+    /// Where rows may paint: the view and the padding around it.
+    rows: Rect,
     panes: [Pane; 2],
+    /// The gap between the panes, from left to right.
+    gap: (f32, f32),
     overview: Rect,
     line_height: f32,
     char_width: f32,
@@ -417,6 +416,8 @@ pub struct TextTab {
     jump_to_first: bool,
     /// After a transfer: the block the arrows now act on must be in view.
     reveal_current: bool,
+    /// The arrows painted in the last frame: their block, where they send, where they stand.
+    arrow_rects: Vec<(usize, Side, Rect)>,
     /// Sides whose file, as read, holds git's conflict markers.
     conflicted: [bool; 2],
 }
@@ -504,6 +505,7 @@ impl TextTab {
             geometry: None,
             jump_to_first: true,
             reveal_current: false,
+            arrow_rects: Vec::new(),
             conflicted: [false, false],
         };
         tab.reload(ctx);
@@ -987,21 +989,31 @@ impl TextTab {
         self.diff.blocks.len()
     }
 
+    #[cfg(test)]
+    pub fn syntax_theme(&self) -> SyntaxTheme {
+        self.syntax_theme
+    }
+
+    #[cfg(test)]
+    pub fn block_start(&self, block: usize, side: Side) -> u32 {
+        let block = &self.diff.blocks[block];
+        if side == Side::Left { block.left.start } else { block.right.start }
+    }
+
+    /// Screen position of the middle of a line's first visual line, in the last frame.
+    #[cfg(test)]
+    pub fn line_center(&self, side: Side, line: u32) -> Option<Pos2> {
+        let geometry = self.geometry?;
+        let index = side.index();
+        let visual = *self.layout.offsets[index].get(line as usize)? as f64;
+        let y = geometry.view.top() as f64 + visual * geometry.line_height as f64 - self.pane_scroll[index];
+        Some(pos2(geometry.panes[index].text_x + 40.0, y as f32 + geometry.line_height / 2.0))
+    }
+
     /// Screen position of a block's arrow in the last painted frame.
     #[cfg(test)]
     pub fn arrow_center(&self, block: usize, target: Side) -> Option<Pos2> {
-        let geometry = self.geometry?;
-        let block = self.diff.blocks.get(block)?;
-        let side = target.other().index();
-        let line = if side == 0 { block.left.start } else { block.right.start };
-        let visual = self.layout.offsets[side][line as usize] as f64;
-        let top = geometry.view.top() as f64 + visual * geometry.line_height as f64
-            - self.pane_scroll[side];
-        let pane = geometry.panes[target.other().index()];
-        Some(pos2(
-            pane.rect.right() - ARROW_SIZE.x / 2.0 - 6.0,
-            top as f32 + geometry.line_height / 2.0,
-        ))
+        self.arrow_rects.iter().find(|(b, t, _)| *b == block && *t == target).map(|(_, _, rect)| rect.center())
     }
 
     #[cfg(test)]
@@ -2284,6 +2296,9 @@ impl TextTab {
         }
         items.push(StatusItem::Pill(doc.encoding.label().to_owned()));
         items.push(StatusItem::Pill(doc.dominant_eol().label().to_owned()));
+        if let Some((current, total)) = self.block_rank() {
+            items.push(StatusItem::Text(format!("Bloc {current} sur {total}")));
+        }
         items.push(StatusItem::Text(format!(
             "Ligne {} sur {} · Colonne {column}",
             line + 1,
@@ -2458,7 +2473,7 @@ impl TextTab {
     fn hit_test(&self, pos: Pos2) -> Option<(Side, TextPos)> {
         let geometry = self.geometry?;
         let docs = self.docs.as_ref()?;
-        let side = if pos.x < geometry.panes[0].rect.right() + CENTER_GAP / 2.0 {
+        let side = if pos.x < (geometry.gap.0 + geometry.gap.1) / 2.0 {
             Side::Left
         } else {
             Side::Right
@@ -2528,7 +2543,9 @@ impl TextTab {
         }
     }
 
-    pub fn show(&mut self, ui: &mut Ui, chrome: &UiPalette, doc: &DocPalette, code_size: f32) {
+    pub fn show(&mut self, ui: &mut Ui, look: &Look, code_size: f32) {
+        let chrome = &look.ui;
+        let doc = &look.doc;
         let ctx = ui.ctx().clone();
         self.poll(&ctx);
         self.set_code_size(code_size);
@@ -2537,21 +2554,18 @@ impl TextTab {
         let painter = ui.painter_at(available);
         painter.rect_filled(available, 0.0, chrome.background);
 
-        let content = available.shrink(OUTER_MARGIN);
-        let pane_width = ((content.width() - CENTER_GAP - OVERVIEW_WIDTH - OUTER_MARGIN) / 2.0).max(120.0);
-        let left_x = content.left();
-        let right_x = left_x + pane_width + CENTER_GAP;
-        let cards = [left_x, right_x].map(|x| {
-            Rect::from_min_size(pos2(x, content.top()), vec2(pane_width, content.height()))
-        });
-        for card in cards {
-            paint_card(&painter, card, doc);
-        }
-        self.pane_headers(ui, &ctx, chrome, cards);
+        let (cards, overview) = panes::layout(available, look, 2, true);
+        let cards = [cards[0], cards[1]];
+        panes::paint_cards(&painter, look, &cards);
+        self.pane_headers(ui, &ctx, look, cards);
 
+        let rows = Rect::from_min_max(
+            pos2(cards[0].card.left(), cards[0].code.top()),
+            pos2(cards[1].card.right(), panes::row_clip(look, cards[0].code).bottom()),
+        );
         let view = Rect::from_min_max(
-            pos2(left_x, content.top() + HEADER_HEIGHT + CARD_PADDING),
-            pos2(right_x + pane_width, content.bottom() - CARD_PADDING),
+            pos2(rows.left(), rows.top() + CODE_PADDING),
+            pos2(rows.right(), cards[0].code.bottom() - CODE_PADDING),
         );
         let font = FontId::new(code_size, FontFamily::Monospace);
         let char_width = ctx.fonts_mut(|fonts| fonts.glyph_width(&font, '0')).max(1.0);
@@ -2560,37 +2574,30 @@ impl TextTab {
             .as_ref()
             .map_or(4, |d| d[0].len().max(d[1].len()).max(1).ilog10() as usize + 1)
             .max(3);
-        let gutter = line_digits as f32 * char_width + GUTTER_PADDING * 2.0;
-        let make_pane = |x: f32| {
-            let rect = Rect::from_min_size(pos2(x, view.top()), vec2(pane_width, view.height()));
+        let gutter = line_digits as f32 * char_width + GUTTER_PADDING * 2.0 + if look.metrics.bar_at_edge { 4.0 } else { 0.0 };
+        let make_pane = |card: Rect| {
+            let rect = Rect::from_x_y_ranges(card.x_range(), view.y_range());
             Pane {
                 rect,
-                text_x: x + gutter + TEXT_PADDING,
-                text_right: rect.right() - ARROW_MARGIN,
+                text_x: rect.left() + gutter + TEXT_PADDING,
+                text_right: rect.right() - WRAP_MARGIN,
             }
         };
-        let panes = [make_pane(left_x), make_pane(right_x)];
+        let panes = [make_pane(cards[0].card), make_pane(cards[1].card)];
         let geometry = Geometry {
             view,
+            rows,
             panes,
-            overview: Rect::from_min_size(
-                pos2(view.right() + OUTER_MARGIN, content.top()),
-                vec2(OVERVIEW_WIDTH, content.height()),
-            ),
+            gap: (cards[0].card.right(), cards[1].card.left()),
+            overview,
             line_height: self.layout.line_height,
             char_width,
         };
         let columns = (((panes[0].text_right - panes[0].text_x) / char_width) as usize).max(8);
         self.geometry = Some(geometry);
 
-        let border = |painter: &Painter| {
-            for card in cards {
-                widgets::mask_bottom_corners(painter, card, CARD_RADIUS as f32, chrome.background);
-                painter.rect_stroke(card, CARD_RADIUS, Stroke::new(1.0, chrome.border), StrokeKind::Inside);
-            }
-        };
         if let Some(error) = &self.error {
-            border(&painter);
+            panes::finish_cards(&painter, look, &cards);
             painter.text(
                 view.center(),
                 Align2::CENTER_CENTER,
@@ -2601,7 +2608,7 @@ impl TextTab {
             return;
         }
         if self.docs.is_none() {
-            border(&painter);
+            panes::finish_cards(&painter, look, &cards);
             let extracting = self.sources.iter().any(|source| source.extract.is_some());
             painter.text(
                 view.center(),
@@ -2680,9 +2687,9 @@ impl TextTab {
             ctx.set_cursor_icon(CursorIcon::Text);
         }
 
-        self.paint_rows(ui, &painter, geometry, doc);
-        self.paint_frames_and_arrows(ui, &ctx, &painter, geometry, doc);
-        self.paint_overview(ui, &painter, geometry, chrome, doc);
+        self.paint_rows(ui, &painter, geometry, look);
+        self.paint_frames_and_arrows(ui, &ctx, &painter, geometry, look);
+        self.paint_overview(ui, &painter, geometry, look);
         if self.filter_counts().is_some_and(|(kept, _)| kept == 0) {
             painter.text(
                 view.center(),
@@ -2695,7 +2702,7 @@ impl TextTab {
         if self.json.as_ref().is_some_and(|json| json.pending.is_some()) {
             ctx.set_cursor_icon(CursorIcon::Progress);
         }
-        border(&painter);
+        panes::finish_cards(&painter, look, &cards);
         if self.question.is_some() {
             self.show_question(&ctx, chrome);
         }
@@ -2880,26 +2887,40 @@ impl TextTab {
         }
     }
 
-    fn pane_headers(&mut self, ui: &mut Ui, ctx: &egui::Context, chrome: &UiPalette, cards: [Rect; 2]) {
+    fn pane_headers(&mut self, ui: &mut Ui, ctx: &egui::Context, look: &Look, cards: [panes::PaneRects; 2]) {
+        let chrome = &look.ui;
         for side in 0..2 {
-            let header = Rect::from_min_size(cards[side].min, vec2(cards[side].width(), HEADER_HEIGHT));
+            let header = cards[side].header;
             let which = if side == 0 { Side::Left } else { Side::Right };
             let badges = self.badges(which);
             let dirty = self.side_dirty(which);
             let read_only = self.is_read_only(which);
+            let tint = match (read_only, which) {
+                (true, _) => chrome.hues.slate,
+                (false, Side::Left) => chrome.hues.violet,
+                (false, Side::Right) => chrome.hues.green,
+            };
+            // A comparison with HEAD: the other side is the working copy.
+            let head_label = |index: usize| self.sources[index].label.as_deref().is_some_and(|label| label.ends_with("(HEAD)"));
+            let working = (self.sources[side].label.is_none() && head_label(1 - side)).then(|| {
+                let name = self.paths[side].file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+                format!("{name} (copie de travail)")
+            });
+            let title = self.sources[side].label.clone().or(working);
             let action = widgets::path_bar(
                 ui,
-                chrome,
+                look,
                 ui.scope_id().with(("header", side)),
                 header,
                 PathBar {
                     path: &self.paths[side],
                     input: &mut self.inputs[side],
                     icon: Icon::File,
+                    tint,
                     dirty,
                     label: ["Chemin de gauche", "Chemin de droite"][side],
                     browse_tip: "Choisir un autre fichier",
-                    title: self.sources[side].label.as_deref(),
+                    title: title.as_deref(),
                     read_only,
                     badges: &badges,
                     fixed: false,
@@ -2918,8 +2939,8 @@ impl TextTab {
             }
         }
         let center = pos2(
-            (cards[0].right() + cards[1].left()) / 2.0,
-            cards[0].top() + HEADER_HEIGHT / 2.0,
+            (cards[0].card.right() + cards[1].card.left()) / 2.0,
+            cards[0].header.center().y,
         );
         let id = ui.scope_id().with("swap");
         let rect = icons::square(center, SWAP_BUTTON);
@@ -3054,19 +3075,25 @@ impl TextTab {
         }
     }
 
-    fn paint_rows(&self, ui: &Ui, painter: &Painter, geometry: Geometry, doc: &DocPalette) {
+    fn paint_rows(&self, ui: &Ui, painter: &Painter, geometry: Geometry, look: &Look) {
         let Some(docs) = &self.docs else {
             return;
         };
+        let doc = &look.doc;
         let view = geometry.view;
         let line_height = geometry.line_height;
         let number_font = FontId::new(self.code_size - 1.0, FontFamily::Monospace);
         let code_font = FontId::new(self.code_size, FontFamily::Monospace);
+        let above = (view.top() - geometry.rows.top()) as f64;
+        let below = (geometry.rows.bottom() - view.bottom()) as f64;
+        // The first look paints whole inserted or removed lines darker; the newer ones leave the
+        // zone and its bar to say it, as their mockups do.
+        let classic = look.ui.chrome == Chrome::Classic;
 
         for (index, pane) in geometry.panes.iter().enumerate() {
             let side = if index == 0 { Side::Left } else { Side::Right };
-            // Lines run to the edges of the card, past the padding of a resting first line.
-            let clip_rect = pane.rect.expand2(vec2(0.0, CARD_PADDING));
+            // Lines run to the edges of the code area, past the padding of a resting first line.
+            let clip_rect = Rect::from_x_y_ranges(pane.rect.x_range(), geometry.rows.y_range());
             let clip = painter.with_clip_rect(clip_rect);
             let text_clip = painter.with_clip_rect(Rect::from_min_max(
                 pos2(pane.text_x - TEXT_PADDING, clip_rect.top()),
@@ -3074,8 +3101,8 @@ impl TextTab {
             ));
             let scroll = self.pane_scroll[index];
             let offsets = &self.layout.offsets[index];
-            let first = ((scroll - CARD_PADDING as f64).max(0.0) / line_height as f64) as u32;
-            let last = ((scroll + (view.height() + CARD_PADDING) as f64) / line_height as f64) as u32 + 1;
+            let first = ((scroll - above).max(0.0) / line_height as f64) as u32;
+            let last = ((scroll + view.height() as f64 + below) / line_height as f64) as u32 + 1;
 
             for line in line_at(offsets, first)..docs[index].len() {
                 let start = offsets[line];
@@ -3097,6 +3124,7 @@ impl TextTab {
                 let row_index = self.layout.line_rows[index][line] as usize;
                 let row = &self.diff.rows[row_index];
                 let ignored_row = self.diff.is_row_ignored(row_index);
+                let current = row.block.is_some() && row.block.map(|b| b as usize) == self.current_block;
                 // A gap between two lines of one block keeps the colour of what fills it across.
                 if let Some(block) = row.block {
                     let block = &self.diff.blocks[block as usize];
@@ -3108,7 +3136,7 @@ impl TextTab {
                             pane.rect.x_range(),
                             bottom..=bottom + gap as f32 * line_height,
                         );
-                        clip.rect_filled(hole, 0.0, mix(doc.canvas, tint, 0.5));
+                        clip.rect_filled(hole, 0.0, mix(Color32::TRANSPARENT, tint, 0.5));
                     }
                 }
                 let rect = Rect::from_x_y_ranges(pane.rect.x_range(), top..=bottom);
@@ -3116,9 +3144,14 @@ impl TextTab {
                     pane.rect.left()..=pane.text_x - TEXT_PADDING,
                     top..=bottom,
                 );
-                if let Some(tint) = row_tint(row, doc).or(ignored_row.then_some(&doc.ignored)) {
-                    clip.rect_filled(rect, 0.0, tint.zone);
-                    clip.rect_filled(gutter, 0.0, tint.gutter);
+                let tint = row_tint(row, doc).or(ignored_row.then_some(&doc.ignored));
+                if let Some(tint) = tint {
+                    clip.rect_filled(rect, 0.0, if current { tint.current } else { tint.zone });
+                    if tint.gutter != tint.zone {
+                        clip.rect_filled(gutter, 0.0, tint.gutter);
+                    }
+                    let bar_x = panes::line_bar_x(look, pane.rect, gutter.right() - GUTTER_PADDING);
+                    panes::paint_line_bar(&clip, look, bar_x, top, bottom, tint.mark);
                 }
                 // What the rules leave out is marked where it matters: in a difference, or where
                 // it hides one. Unchanged text matching a rule stays plain.
@@ -3133,12 +3166,12 @@ impl TextTab {
                     Align2::RIGHT_CENTER,
                     line + 1,
                     number_font.clone(),
-                    doc.line_number,
+                    if tint.is_some() { doc.line_number_on } else { doc.line_number },
                 );
                 let spans = row.pair.and_then(|p| self.diff.spans.get(p as usize));
                 let whole = match (row.left, row.right, row.block) {
-                    (Some(_), None, Some(_)) => Some(doc.delete.text),
-                    (None, Some(_), Some(_)) => Some(doc.insert.text),
+                    (Some(_), None, Some(_)) if classic => Some(doc.delete.text),
+                    (None, Some(_), Some(_)) if classic => Some(doc.insert.text),
                     _ => None,
                 };
                 self.paint_line(
@@ -3213,17 +3246,20 @@ impl TextTab {
         );
     }
 
+    /// The frames or the ribbons of the blocks in view, the links between them, and the arrows
+    /// of the block being worked on, or of the one under the pointer.
     fn paint_frames_and_arrows(
         &mut self,
         ui: &mut Ui,
         ctx: &egui::Context,
         painter: &Painter,
         geometry: Geometry,
-        doc: &DocPalette,
+        look: &Look,
     ) {
+        let doc = &look.doc;
         let view = geometry.view;
         let line_height = geometry.line_height as f64;
-        let clip = painter.with_clip_rect(view.expand2(vec2(0.0, CARD_PADDING)));
+        let clip = painter.with_clip_rect(geometry.rows);
         let bottom_edge = clip.clip_rect().bottom();
         let pane_scroll = self.pane_scroll;
         let offsets = &self.layout.offsets;
@@ -3232,9 +3268,12 @@ impl TextTab {
         };
         let y_of = |side: usize, line: u32| y_at(side, offsets[side][line as usize]);
         let first = self.diff.blocks.partition_point(|block| {
-            y_of(0, block.left.end).max(y_of(1, block.right.end)) < view.top()
+            y_of(0, block.left.end).max(y_of(1, block.right.end)) < geometry.rows.top()
         });
+        let ribbons = look.links == LinkStyle::Ribbons;
+        let pointer = ui.ctx().pointer_hover_pos().filter(|_| ui.rect_contains_pointer(geometry.rows));
         let mut pushed = None;
+        let mut arrows = Vec::new();
         let read_only = [Side::Left, Side::Right].map(|side| self.is_read_only(side));
         for block_index in first..self.diff.blocks.len() {
             if !self.block_kept(block_index) {
@@ -3253,7 +3292,8 @@ impl TextTab {
                 Stroke::new(1.0, doc.frame)
             };
             let mut anchors = [0.0; 2];
-            let mut arrow_tops = [0.0; 2];
+            let mut spans = [(0.0, 0.0); 2];
+            let mut hovered = false;
             for side in 0..2 {
                 let pane = geometry.panes[side];
                 let frame_top = y_of(side, ranges[side].start);
@@ -3264,87 +3304,83 @@ impl TextTab {
                         None => frame_top,
                     };
                     let y = clip.round_to_pixel_center(visual);
-                    clip.hline(pane.rect.x_range(), y, stroke);
+                    let rule = if ribbons { Stroke::new(if current { 1.5 } else { 1.0 }, tint.mark) } else { stroke };
+                    clip.hline(pane.rect.x_range(), y, rule);
                     anchors[side] = y;
-                    arrow_tops[side] = (y - ARROW_SIZE.y / 2.0).max(view.top() + 2.0);
+                    spans[side] = (y, y);
+                    hovered |= pointer.is_some_and(|p| pane.rect.x_range().contains(p.x) && (p.y - y).abs() <= 4.0);
                 } else {
                     let last = ranges[side].end as usize - 1;
                     let frame_bottom = y_at(side, self.line_extent(side, last).end);
                     let rect = Rect::from_x_y_ranges(pane.rect.x_range(), frame_top..=frame_bottom);
-                    clip.rect_stroke(rect, 0.0, stroke, StrokeKind::Inside);
+                    if !ribbons {
+                        clip.rect_stroke(rect, 0.0, stroke, StrokeKind::Inside);
+                    }
                     // The middle of what can be seen of the frame, so that a link stays in view
                     // along a block taller than the window.
                     let (low, high) = (frame_top.max(view.top()), frame_bottom.min(view.bottom()));
                     anchors[side] = if low < high { (low + high) / 2.0 } else { (frame_top + frame_bottom) / 2.0 };
-                    let inset = (geometry.line_height - ARROW_SIZE.y) / 2.0;
-                    arrow_tops[side] = (frame_top + inset)
-                        .max(view.top() + 2.0)
-                        .min(frame_bottom - ARROW_SIZE.y - inset);
+                    spans[side] = (frame_top, frame_bottom);
+                    hovered |= pointer.is_some_and(|p| rect.contains(p));
                 }
             }
-            paint_link(
-                &clip,
-                pos2(geometry.panes[0].rect.right(), anchors[0]),
-                pos2(geometry.panes[1].rect.left(), anchors[1]),
-                stroke,
-            );
-
-            for (side, target) in [(0, Side::Right), (1, Side::Left)] {
+            if ribbons {
+                let mark = block_tint(block.kind, &look.gap).mark;
+                panes::paint_ribbon(&clip, geometry.gap, spans[0], spans[1], mark, look.ui.ribbon, current);
+            } else {
+                let link = if current { stroke } else { Stroke::new(1.0, look.gap.frame) };
+                paint_link(&clip, pos2(geometry.gap.0, anchors[0]), pos2(geometry.gap.1, anchors[1]), link);
+            }
+            hovered |= pointer.is_some_and(|p| panes::ribbon_contains(geometry.gap, spans[0], spans[1], p));
+            let rects = [
+                (0, Side::Right, panes::arrow_rect(look, geometry.gap, true, anchors[0])),
+                (1, Side::Left, panes::arrow_rect(look, geometry.gap, false, anchors[1])),
+            ];
+            hovered |= pointer.is_some_and(|p| rects.iter().any(|(_, _, rect)| rect.contains(p)));
+            // Arrows for the block being worked on, and for the one under the pointer: the
+            // others stay quiet.
+            if !(current || hovered) {
+                continue;
+            }
+            for (side, target, rect) in rects {
                 // Nothing may be sent into a read-only side: no arrow offers it.
                 if read_only[target.index()] {
                     continue;
                 }
-                let pane = geometry.panes[side];
-                let rect = Rect::from_min_size(
-                    pos2(pane.rect.right() - ARROW_SIZE.x - 7.0, arrow_tops[side]),
-                    ARROW_SIZE,
-                );
                 if rect.bottom() > view.bottom() || rect.top() < view.top() {
                     continue;
                 }
                 let tip = if target == Side::Right { "Envoyer ce bloc à droite" } else { "Envoyer ce bloc à gauche" };
                 let id = ui.scope_id().with(("arrow", block_index, side));
-                let response = block_button(ui, &clip, rect, id, Icon::ArrowRight, target == Side::Left, tip, tint, doc).on_hover_text(tip);
+                let response = panes::arrow_button(ui, &clip, look, rect, id, target == Side::Left, tip).on_hover_text(tip);
+                arrows.push((block_index, target, rect));
                 if response.clicked() {
                     pushed = Some((block_index, target));
                 }
             }
         }
+        self.arrow_rects = arrows;
         if let Some((block, target)) = pushed {
             self.push_block(ctx, block, target);
         }
     }
 
-    fn paint_overview(
-        &mut self,
-        ui: &mut Ui,
-        painter: &Painter,
-        geometry: Geometry,
-        chrome: &UiPalette,
-        doc: &DocPalette,
-    ) {
+    fn paint_overview(&mut self, ui: &mut Ui, painter: &Painter, geometry: Geometry, look: &Look) {
         let rect = geometry.overview;
-        painter.rect_filled(rect, 4.0, chrome.panel);
         let total = (self.layout.sync.total() as f32).max(1.0);
         let scale = rect.height() / total;
-        let mut last_bottom = f32::MIN;
-        for (block, extent) in self.diff.blocks.iter().zip(&self.layout.sync.blocks) {
-            if extent.is_empty() {
-                continue;
-            }
-            let y0 = rect.top() + extent.start as f32 * scale;
-            let y1 = (rect.top() + extent.end as f32 * scale).max(y0 + 2.0);
-            if y1 <= last_bottom {
-                continue;
-            }
-            let tint = block_tint(block.kind, doc);
-            painter.rect_filled(
-                Rect::from_x_y_ranges(rect.x_range(), y0.max(last_bottom)..=y1),
-                0.0,
-                tint.mark,
-            );
-            last_bottom = y1;
-        }
+        let marks: Vec<(f32, f32, Color32)> = self
+            .diff
+            .blocks
+            .iter()
+            .zip(&self.layout.sync.blocks)
+            .filter(|(_, extent)| !extent.is_empty())
+            .map(|(block, extent)| {
+                let top = rect.top() + extent.start as f32 * scale;
+                let bottom = rect.top() + extent.end as f32 * scale;
+                (top, bottom, block_tint(block.kind, &look.gap).mark)
+            })
+            .collect();
         let line = geometry.line_height;
         let thumb_top = rect.top() + (self.scroll as f32 / line) * scale;
         let thumb_height = (geometry.view.height() / line * scale).max(14.0);
@@ -3352,19 +3388,19 @@ impl TextTab {
             pos2(rect.left(), thumb_top),
             vec2(rect.width(), thumb_height.min(rect.height())),
         );
-        painter.rect(
-            thumb,
-            3.0,
-            chrome.text_dim.gamma_multiply(0.22),
-            Stroke::new(1.0, chrome.text_dim),
-            StrokeKind::Inside,
-        );
+        panes::paint_overview(painter, look, rect, &marks, thumb);
         let response = ui.interact(rect, ui.scope_id().with("overview"), Sense::click_and_drag());
         if let Some(pos) = response.interact_pointer_pos() {
             let ratio = ((pos.y - rect.top() - thumb_height / 2.0) / rect.height()).max(0.0);
             let max = self.layout.sync.max_scroll((geometry.view.height() / line) as f64) * line as f64;
             self.scroll = (ratio as f64 * total as f64 * line as f64).min(max);
         }
+    }
+
+    /// The block being worked on, counted from one, and how many there are.
+    pub fn block_rank(&self) -> Option<(usize, usize)> {
+        let current = self.current_block?;
+        Some((current + 1, self.diff.blocks.len()))
     }
 }
 
@@ -3782,7 +3818,7 @@ pub(crate) fn block_button(
     let response = ui.interact(rect, id, Sense::click());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tip));
     let hovered = response.hovered();
-    let (fill, color) = if hovered { (tint.mark, doc.canvas) } else { (doc.control, doc.control_text) };
+    let (fill, color) = if hovered { (tint.mark, crate::theme::over(doc.canvas, doc.backdrop)) } else { (doc.control, doc.control_text) };
     painter.rect(
         rect,
         CornerRadius::same(5),
@@ -3800,12 +3836,6 @@ pub(crate) fn block_button(
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
     }
     response
-}
-
-/// A pane's card: its shadow and its canvas.
-pub(crate) fn paint_card(painter: &Painter, card: Rect, doc: &DocPalette) {
-    painter.add(egui::Shadow { offset: [0, 3], blur: 14, spread: 0, color: Color32::from_black_alpha(46) }.as_shape(card, CARD_RADIUS));
-    painter.rect_filled(card, CARD_RADIUS, doc.canvas);
 }
 
 /// What [`paint_text_line`] needs to draw one line of a pane.
@@ -4012,10 +4042,14 @@ pub(crate) fn build_job(input: &JobInput<'_>) -> LayoutJob {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme::{DocPalette, Mode};
+    use crate::theme::{CodeTone, LinkStyle, Look, ThemeKind};
+
+    fn light() -> crate::theme::DocPalette {
+        Look::new(ThemeKind::Clair, CodeTone::Theme, false, LinkStyle::Ribbons).doc
+    }
 
     fn job(text: &str, range: Range<usize>, spans: &[ChangeSpan]) -> LayoutJob {
-        let doc = DocPalette::get(Mode::Light);
+        let doc = light();
         let font = FontId::monospace(14.0);
         build_job(&JobInput {
             text,
@@ -4040,7 +4074,7 @@ mod tests {
 
     #[test]
     fn change_spans_become_dark_backgrounds() {
-        let doc = DocPalette::get(Mode::Light);
+        let doc = light();
         let spans = [
             ChangeSpan {
                 range: 2..4,
@@ -4169,7 +4203,7 @@ mod tests {
 
     #[test]
     fn colours_lagging_behind_an_edit_never_split_a_character() {
-        let doc = DocPalette::get(Mode::Light);
+        let doc = light();
         let font = FontId::monospace(14.0);
         let stale = [StyleRun { start: 1, end: 3, color: [1, 2, 3], italic: false }];
         let job = build_job(&JobInput {
@@ -4190,7 +4224,7 @@ mod tests {
 
     #[test]
     fn ignored_text_is_faded_on_its_own_background() {
-        let doc = DocPalette::get(Mode::Dark);
+        let doc = Look::new(ThemeKind::TokyoNight, CodeTone::Theme, false, LinkStyle::Ribbons).doc;
         let font = FontId::monospace(14.0);
         let job = build_job(&JobInput {
             text: "at 2024-03-15 ok",
@@ -4212,7 +4246,7 @@ mod tests {
 
     #[test]
     fn found_text_takes_over_the_change_colour() {
-        let doc = DocPalette::get(Mode::Light);
+        let doc = light();
         let font = FontId::monospace(14.0);
         let spans = [ChangeSpan { range: 0..6, kind: SpanKind::Replace }];
         let job = build_job(&JobInput {

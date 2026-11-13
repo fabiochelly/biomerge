@@ -12,7 +12,7 @@ use biomerge_core::fileops::{DeleteMode, Operation};
 use biomerge_core::ignore_rules::{IgnoreRule, IgnoreRules};
 use biomerge_core::json::{ArrayOrder, JsonOptions, KeyOrder};
 use egui::{
-    Align2, Button, CornerRadius, FontId, Frame, Key, Margin, Modifiers, Panel, Popup, Rect,
+    Align2, Button, Color32, FontId, Frame, Key, Margin, Modifiers, Panel, Popup, Rect,
     RichText, Sense, Stroke, Ui, ViewportCommand, WidgetInfo, pos2, vec2,
 };
 
@@ -26,10 +26,9 @@ use crate::palette::{Entry, Palette};
 use crate::text_view::{SearchMode, SearchTarget, SideSource, StatusItem, TextSettings, TextTab};
 use biomerge_core::merge3::{Resolution, has_conflict_markers};
 use crate::{git, rules_editor};
-use crate::theme::{self, DEFAULT_CODE_SIZE, DocPalette, MAX_CODE_SIZE, MIN_CODE_SIZE, Mode, UiPalette, mix};
+use crate::theme::{self, Chrome, CodeTone, DEFAULT_CODE_SIZE, LinkStyle, Look, MAX_CODE_SIZE, MIN_CODE_SIZE, ThemeKind, UiPalette, mix};
 use crate::widgets::{self, Item, dialog_frame, menu_frame, menu_width, separator};
 
-const BAND_HEIGHT: f32 = 48.0;
 const BAND_PADDING: f32 = 10.0;
 const BAND_GAP: f32 = 8.0;
 const MENU_BUTTON: f32 = 32.0;
@@ -37,7 +36,6 @@ const TAB_HEIGHT: f32 = 32.0;
 const TAB_MIN_WIDTH: f32 = 90.0;
 const TAB_MAX_WIDTH: f32 = 260.0;
 const TAB_GAP: f32 = 2.0;
-const STATUS_BAR_HEIGHT: f32 = 36.0;
 const STATUS_PADDING: f32 = 18.0;
 const PILL_HEIGHT: f32 = 22.0;
 const PILL_PADDING: f32 = 22.0;
@@ -155,7 +153,11 @@ enum Command {
     FocusFolderFilter,
     OpenIgnoreRules,
     CompareWithHead,
-    SetTheme(Mode),
+    SetTheme(ThemeKind),
+    SetCodeTone(CodeTone),
+    SetLinks(LinkStyle),
+    /// Verre's window lets the desktop show through, or not.
+    ToggleTransparency,
     OpenFontDialog,
     ChangeCodeSize(f32),
     ResetCodeSize,
@@ -277,7 +279,15 @@ impl FontDialog {
 pub struct App {
     tabs: Vec<Tab>,
     active: usize,
-    mode: Mode,
+    theme: ThemeKind,
+    code_tone: CodeTone,
+    links: LinkStyle,
+    /// Verre only: the compositor blurs the desktop behind the window.
+    transparent: bool,
+    /// What the four settings above give, worked out when one of them changes.
+    look: Look,
+    /// Ctrl+wheel steps the code size; a touchpad gives fractions of a step.
+    zoom_scroll: f32,
     code_family: Option<String>,
     code_size: f32,
     wrap_lines: bool,
@@ -335,10 +345,19 @@ impl App {
         // Ctrl+plus and Ctrl+minus size the code, not the whole window.
         ctx.options_mut(|options| options.zoom_with_keyboard = false);
         let load = |key: &str| storage.and_then(|s| s.get_string(key));
+        let theme = ThemeKind::from_stored(load("theme").as_deref());
+        let code_tone = load("code_tone").and_then(|v| CodeTone::from_key(&v)).unwrap_or(CodeTone::Theme);
+        let links = load("link_style").and_then(|v| LinkStyle::from_key(&v)).unwrap_or(LinkStyle::Ribbons);
+        let transparent = load("transparent_window").is_none_or(|v| v == "true");
         let mut app = Self {
             tabs: Vec::new(),
             active: 0,
-            mode: load("theme").and_then(|v| Mode::from_key(&v)).unwrap_or(Mode::Dark),
+            theme,
+            code_tone,
+            links,
+            transparent,
+            look: Look::new(theme, code_tone, transparent, links),
+            zoom_scroll: 0.0,
             code_family: load("code_family").filter(|family| !family.is_empty()),
             code_size: load("code_size")
                 .and_then(|size| size.parse().ok())
@@ -438,7 +457,7 @@ impl App {
             rules: self.compiled_rules.clone(),
             wrap_lines: self.wrap_lines,
             aligned: self.aligned_lines,
-            syntax_theme: self.mode.syntax(),
+            syntax_theme: self.look.syntax,
         }
     }
 
@@ -457,7 +476,25 @@ impl App {
 
     fn install_look(&self, ctx: &egui::Context) {
         fonts::install(ctx, self.code_family.as_deref());
-        theme::apply_style(ctx, &UiPalette::get(self.mode));
+        theme::apply_style(ctx, &self.look);
+    }
+
+    /// Works the look out again after a change of one of its settings: styles, and the code
+    /// colours of every tab.
+    fn refresh_look(&mut self, ctx: &egui::Context) {
+        let syntax = self.look.syntax;
+        self.look = Look::new(self.theme, self.code_tone, self.transparent, self.links);
+        theme::apply_style(ctx, &self.look);
+        if self.look.syntax != syntax {
+            let syntax = self.look.syntax;
+            for tab in &mut self.tabs {
+                match tab {
+                    Tab::Text(tab) => tab.set_syntax_theme(ctx, syntax),
+                    Tab::Merge(tab) => tab.set_syntax_theme(ctx, syntax),
+                    Tab::Folder(_) => {}
+                }
+            }
+        }
     }
 
     fn open(&mut self, ctx: &egui::Context, paths: [PathBuf; 2]) -> Result<(), String> {
@@ -505,7 +542,7 @@ impl App {
             wrap_lines: self.wrap_lines,
             aligned: self.aligned_lines,
             context: self.context(),
-            syntax_theme: self.mode.syntax(),
+            syntax_theme: self.look.syntax,
             json: self.json_options.clone(),
             json_structural: self.json_structural,
             extract: self.extract_options,
@@ -1000,16 +1037,21 @@ impl App {
                     tab.set_all_expanded(expanded);
                 }
             }
-            Command::SetTheme(mode) => {
-                self.mode = mode;
-                theme::apply_style(ctx, &UiPalette::get(mode));
-                for tab in &mut self.tabs {
-                    match tab {
-                        Tab::Text(tab) => tab.set_syntax_theme(ctx, mode.syntax()),
-                        Tab::Merge(tab) => tab.set_syntax_theme(ctx, mode.syntax()),
-                        Tab::Folder(_) => {}
-                    }
-                }
+            Command::SetTheme(kind) => {
+                self.theme = kind;
+                self.refresh_look(ctx);
+            }
+            Command::SetCodeTone(tone) => {
+                self.code_tone = tone;
+                self.refresh_look(ctx);
+            }
+            Command::SetLinks(links) => {
+                self.links = links;
+                self.refresh_look(ctx);
+            }
+            Command::ToggleTransparency => {
+                self.transparent = !self.transparent;
+                self.refresh_look(ctx);
             }
             Command::OpenFontDialog => self.font_dialog = Some(FontDialog::new(ctx)),
             Command::ChangeCodeSize(delta) => {
@@ -1119,6 +1161,33 @@ impl App {
             if self.active > index || self.active >= self.tabs.len() {
                 self.active = self.active.saturating_sub(1);
             }
+        }
+    }
+
+    /// Ctrl+wheel sizes the code, a notch a step; a touchpad's points add up to steps.
+    fn zoom_with_wheel(&mut self, ctx: &egui::Context) {
+        let delta: f32 = ctx.input(|input| {
+            input
+                .events
+                .iter()
+                .map(|event| match event {
+                    egui::Event::MouseWheel { unit, delta, modifiers, .. } if modifiers.command => match unit {
+                        egui::MouseWheelUnit::Line => delta.y,
+                        egui::MouseWheelUnit::Point => delta.y / 40.0,
+                        egui::MouseWheelUnit::Page => delta.y * 3.0,
+                    },
+                    _ => 0.0,
+                })
+                .sum()
+        });
+        if delta == 0.0 {
+            return;
+        }
+        self.zoom_scroll += delta;
+        while self.zoom_scroll.abs() >= 1.0 {
+            let step = self.zoom_scroll.signum();
+            self.zoom_scroll -= step;
+            self.run(ctx, Command::ChangeCodeSize(step));
         }
     }
 
@@ -1367,8 +1436,19 @@ impl App {
         let response = Item::new("Apparence").icon(Icon::ColorScale).submenu().show(ui, chrome);
         egui::containers::menu::SubMenu::new().config(submenu_config(chrome)).show(ui, &response, |ui| {
             menu_width(ui, SUBMENU_WIDTH);
-            go(ui, Item::new("Thème sombre").checked(self.mode == Mode::Dark), Command::SetTheme(Mode::Dark), commands);
-            go(ui, Item::new("Thème clair").checked(self.mode == Mode::Light), Command::SetTheme(Mode::Light), commands);
+            for kind in ThemeKind::ALL {
+                go(ui, Item::new(kind.name()).checked(self.theme == kind), Command::SetTheme(kind), commands);
+            }
+            separator(ui, chrome);
+            for tone in CodeTone::ALL {
+                go(ui, Item::new(tone.name()).checked(self.code_tone == tone), Command::SetCodeTone(tone), commands);
+            }
+            separator(ui, chrome);
+            for links in [LinkStyle::Lines, LinkStyle::Ribbons] {
+                go(ui, Item::new(links.name()).checked(self.links == links), Command::SetLinks(links), commands);
+            }
+            let verre = self.theme == ThemeKind::Verre;
+            go(ui, Item::new("Fenêtre transparente").checked(verre && self.transparent).enabled(verre), Command::ToggleTransparency, commands);
             separator(ui, chrome);
             go(ui, Item::new("Police du texte…"), Command::OpenFontDialog, commands);
             let wrap = self.shown_wrap();
@@ -1459,8 +1539,19 @@ impl App {
         add(true, "Respecter .gitignore", "Dossiers", "", Some(Icon::Folder), self.scan_options.respect_gitignore, Command::ToggleGitignore);
         add(is_folder, "Tout déplier", "Dossiers", "", Some(Icon::Folder), false, Command::SetAllExpanded(true));
         add(is_folder, "Tout replier", "Dossiers", "", Some(Icon::Folder), false, Command::SetAllExpanded(false));
-        add(true, "Thème sombre", "Apparence", "", Some(Icon::ColorScale), self.mode == Mode::Dark, Command::SetTheme(Mode::Dark));
-        add(true, "Thème clair", "Apparence", "", Some(Icon::ColorScale), self.mode == Mode::Light, Command::SetTheme(Mode::Light));
+        for kind in ThemeKind::ALL {
+            let name = format!("Thème : {}", kind.name());
+            add(true, &name, "Apparence", "", Some(Icon::ColorScale), self.theme == kind, Command::SetTheme(kind));
+        }
+        for tone in CodeTone::ALL {
+            let icon = if tone == CodeTone::Dark { Icon::Moon } else { Icon::Sun };
+            add(true, tone.name(), "Apparence", "", Some(icon), self.code_tone == tone, Command::SetCodeTone(tone));
+        }
+        for links in [LinkStyle::Lines, LinkStyle::Ribbons] {
+            add(true, links.name(), "Apparence", "", Some(Icon::Ribbon), self.links == links, Command::SetLinks(links));
+        }
+        let verre = self.theme == ThemeKind::Verre;
+        add(verre, "Fenêtre transparente", "Apparence", "", Some(Icon::ColorScale), self.transparent, Command::ToggleTransparency);
         add(true, "Police du texte…", "Apparence", "", Some(Icon::Font), false, Command::OpenFontDialog);
         add(true, "Agrandir le texte", "Apparence", "Ctrl++", Some(Icon::Font), false, Command::ChangeCodeSize(1.0));
         add(true, "Réduire le texte", "Apparence", "Ctrl+-", Some(Icon::Font), false, Command::ChangeCodeSize(-1.0));
@@ -1509,76 +1600,108 @@ impl App {
         entries
     }
 
-    fn band(&mut self, ui: &mut Ui, chrome: &UiPalette, commands: &mut Vec<Command>) {
-        let bar = ui.max_rect().shrink2(vec2(BAND_PADDING, 0.0));
-        ui.painter().hline(
-            ui.max_rect().x_range(),
-            ui.painter().round_to_pixel_center(ui.max_rect().bottom() - 0.5),
-            Stroke::new(1.0, chrome.border),
-        );
+    fn band(&mut self, ui: &mut Ui, look: &Look, commands: &mut Vec<Command>) {
+        let chrome = &look.ui;
+        let style = chrome.chrome;
+        let full = ui.max_rect();
+        let padding = match style {
+            Chrome::Verre | Chrome::Ardoise => 16.0,
+            Chrome::Porcelaine => 22.0,
+            Chrome::Graphite => 12.0,
+            Chrome::Classic => BAND_PADDING,
+        };
+        let bar = full.shrink2(vec2(padding, 0.0));
+        let rule = match style {
+            Chrome::Classic => Some(chrome.border),
+            Chrome::Ardoise => Some(Color32::from_rgb(0x1e, 0x22, 0x2a)),
+            Chrome::Graphite => Some(Color32::from_rgb(0x22, 0x22, 0x24)),
+            Chrome::Verre | Chrome::Porcelaine => None,
+        };
+        if let Some(rule) = rule {
+            ui.painter().hline(full.x_range(), ui.painter().round_to_pixel_center(full.bottom() - 0.5), Stroke::new(1.0, rule));
+        }
         let center_y = bar.center().y;
-        let button = Rect::from_min_size(pos2(bar.left(), center_y - MENU_BUTTON / 2.0), vec2(MENU_BUTTON, MENU_BUTTON));
+        let size = match style {
+            Chrome::Verre | Chrome::Porcelaine => 38.0,
+            Chrome::Ardoise => 34.0,
+            Chrome::Graphite | Chrome::Classic => MENU_BUTTON,
+        };
+        let button = Rect::from_min_size(pos2(bar.left(), center_y - size / 2.0), vec2(size, size));
         let response = ui.interact(button, ui.scope_id().with("menu-button"), Sense::click());
         response.widget_info(|| WidgetInfo::labeled(egui::Role::Button, true, "Menu"));
         let open = Popup::is_id_open(ui.ctx(), Popup::default_response_id(&response));
         let active = response.hovered() || open;
-        if active {
-            ui.painter().rect_filled(button, 7.0, chrome.hover);
+        let painter = ui.painter();
+        match style {
+            Chrome::Verre => {
+                let fill = if active { theme::alpha(0xffffff, 0.1) } else { theme::alpha(0xffffff, 0.05) };
+                painter.rect(button, 11.0, fill, Stroke::new(1.0, theme::alpha(0xffffff, 0.08)), egui::StrokeKind::Inside);
+            }
+            Chrome::Porcelaine => {
+                painter.add(egui::Shadow { offset: [0, 1], blur: 3, spread: 0, color: Color32::from_black_alpha(18) }.as_shape(button, 12));
+                let fill = if active { chrome.hover } else { chrome.raised };
+                painter.rect(button, 12.0, fill, Stroke::new(1.0, theme::alpha(0x000000, 0.05)), egui::StrokeKind::Inside);
+            }
+            _ if active => {
+                painter.rect_filled(button, 8.0, chrome.hover);
+            }
+            _ => {}
         }
-        icons::paint(
-            ui.painter(),
-            Icon::Hamburger,
-            icons::square(button.center(), 18.0),
-            if active { chrome.text } else { chrome.text_dim },
-        );
+        let glyph = if active || matches!(style, Chrome::Verre | Chrome::Porcelaine) { chrome.text } else { chrome.text_dim };
+        icons::paint(painter, Icon::Hamburger, icons::square(button.center(), 18.0), glyph);
         let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
         Popup::menu(&response).frame(menu_frame(chrome)).show(|ui| {
             self.main_menu(ui, chrome, commands);
         });
-        let tabs_left = button.right() + BAND_GAP;
+        let gap = if style == Chrome::Porcelaine { 10.0 } else { BAND_GAP + 2.0 };
+        let tabs_left = button.right() + gap;
         // Text tabs find and filter blocks there; folder tabs filter names.
-        let is_text = self.tabs.get(self.active).is_some();
-        let room = bar.right() - tabs_left;
-        let filter_width = if is_text {
-            (room * 0.5).clamp(FILTER_MIN_WIDTH.min(room), FILTER_WIDTH)
-        } else {
-            0.0
+        let has_field = self.tabs.get(self.active).is_some();
+        let (field_width, field_height) = match style {
+            Chrome::Verre => (340.0, 40.0),
+            Chrome::Ardoise => (320.0, 34.0),
+            Chrome::Porcelaine => (300.0, 38.0),
+            Chrome::Graphite => (520.0, 32.0),
+            Chrome::Classic => (FILTER_WIDTH, FILTER_HEIGHT),
         };
-        let tabs_right = bar.right() - filter_width - if is_text { BAND_GAP * 2.0 } else { 0.0 };
-        self.tab_strip(ui, Rect::from_min_max(pos2(tabs_left, bar.top()), pos2(tabs_right, bar.bottom())), chrome);
-        if is_text {
-            let group = Rect::from_min_size(
-                pos2(bar.right() - filter_width, center_y - FILTER_HEIGHT / 2.0),
-                vec2(filter_width, FILTER_HEIGHT),
-            );
+        let room = bar.right() - tabs_left;
+        let field_width = if has_field { (room * 0.45).clamp(FILTER_MIN_WIDTH.min(room), field_width.max(380.0)) } else { 0.0 };
+        // Graphite centres its field, the language and the encoding on its right.
+        let field = if style == Chrome::Graphite {
+            Rect::from_center_size(pos2(full.center().x, center_y), vec2(field_width.min(room * 0.5), field_height))
+        } else {
+            Rect::from_min_size(pos2(bar.right() - field_width, center_y - field_height / 2.0), vec2(field_width, field_height))
+        };
+        let tabs_right = if has_field { field.left() - BAND_GAP * 2.0 } else { bar.right() };
+        self.tab_strip(ui, Rect::from_min_max(pos2(tabs_left, bar.top()), pos2(tabs_right, bar.bottom())), look);
+        if style == Chrome::Graphite && has_field {
+            let items = self.active_status_items();
+            let words: Vec<String> = items.iter().filter_map(|item| match item {
+                StatusItem::Pill(text) => Some(text.clone()),
+                _ => None,
+            }).collect();
+            let text = words.join("  ·  ");
+            let painter = ui.painter_at(Rect::from_min_max(pos2(field.right() + 16.0, bar.top()), bar.max));
+            painter.text(pos2(bar.right(), center_y), Align2::RIGHT_CENTER, text, FontId::proportional(12.5), chrome.text_faint);
+        }
+        if has_field {
             if matches!(self.tabs.get(self.active), Some(Tab::Folder(_))) {
-                self.folder_filter_group(ui, group, chrome);
+                self.folder_filter_group(ui, field, look);
             } else {
-                self.search_group(ui, group, chrome);
+                self.search_group(ui, field, look);
             }
         }
     }
 
     /// The patterns that keep or leave out names in folder comparisons, in the frame of the
     /// text search: applied after a pause in typing, or at once with Enter.
-    fn folder_filter_group(&mut self, ui: &mut Ui, group: Rect, chrome: &UiPalette) {
+    fn folder_filter_group(&mut self, ui: &mut Ui, group: Rect, look: &Look) {
+        let chrome = &look.ui;
         let focus = std::mem::take(&mut self.focus_search);
         let id = ui.scope_id().with("folder-filter");
         let focused = ui.memory(|memory| memory.has_focus(id));
         let hovered = ui.rect_contains_pointer(group);
-        let border = if self.folder_filter_error.is_some() {
-            chrome.error
-        } else if focused {
-            chrome.accent
-        } else if hovered {
-            mix(chrome.border, chrome.text_dim, 0.5)
-        } else {
-            chrome.border
-        };
-        if focused {
-            ui.painter().rect_stroke(group, 7.0, Stroke::new(3.0, chrome.accent.gamma_multiply(0.22)), egui::StrokeKind::Outside);
-        }
-        ui.painter().rect(group, 7.0, chrome.input, Stroke::new(1.0, border), egui::StrokeKind::Inside);
+        field_frame(ui, look, group, focused, hovered, self.folder_filter_error.is_some());
         let center_y = group.center().y;
         let active = !self.scan_options.name_filter.is_empty();
         let funnel = icons::square(pos2(group.left() + 17.0, center_y), 15.0);
@@ -1636,7 +1759,8 @@ impl App {
 
     /// Finding in the text and filtering the blocks share one field and its options in one frame,
     /// as csvfab's search: the lit funnel tells which of the two the field is doing.
-    fn search_group(&mut self, ui: &mut Ui, group: Rect, chrome: &UiPalette) {
+    fn search_group(&mut self, ui: &mut Ui, group: Rect, look: &Look) {
+        let chrome = &look.ui;
         let focus = std::mem::take(&mut self.focus_search);
         let tab: &mut dyn SearchTarget = match self.tabs.get_mut(self.active) {
             Some(Tab::Text(tab)) => tab.as_mut(),
@@ -1648,24 +1772,7 @@ impl App {
         let focused = ui.memory(|memory| memory.has_focus(id));
         let hovered = ui.rect_contains_pointer(group);
         let invalid = tab.filter_error().is_some();
-        let border = if invalid {
-            chrome.error
-        } else if focused {
-            chrome.accent
-        } else if hovered {
-            mix(chrome.border, chrome.text_dim, 0.5)
-        } else {
-            chrome.border
-        };
-        if focused {
-            ui.painter().rect_stroke(
-                group,
-                7.0,
-                Stroke::new(3.0, chrome.accent.gamma_multiply(0.22)),
-                egui::StrokeKind::Outside,
-            );
-        }
-        ui.painter().rect(group, 7.0, chrome.input, Stroke::new(1.0, border), egui::StrokeKind::Inside);
+        field_frame(ui, look, group, focused, hovered, invalid);
         let center_y = group.center().y;
         icons::paint(ui.painter(), Icon::Magnifier, icons::square(pos2(group.left() + 17.0, center_y), 15.0), chrome.text_dim);
 
@@ -1800,58 +1907,131 @@ impl App {
         }
     }
 
-    fn tab_strip(&mut self, ui: &mut Ui, strip: Rect, chrome: &UiPalette) {
+    /// The kind of a tab: the icon and hue of its tile or square.
+    fn tab_kind(&self, tab: &Tab, look: &Look) -> (Icon, Color32) {
+        let hues = look.ui.hues;
+        match tab {
+            Tab::Text(tab) if tab.is_json() => (Icon::Braces, hues.amber),
+            Tab::Text(tab) if tab.owns_wrap() => (Icon::FileText, hues.teal),
+            Tab::Text(_) => (Icon::TextCompare, hues.violet),
+            Tab::Folder(_) => (Icon::Folder, hues.blue),
+            Tab::Merge(_) => (Icon::MergeTab, hues.pink),
+        }
+    }
+
+    fn tab_strip(&mut self, ui: &mut Ui, strip: Rect, look: &Look) {
+        let chrome = &look.ui;
+        let style = chrome.chrome;
         let painter = ui.painter_at(strip);
         let center_y = strip.center().y;
-        let font = widgets::medium(12.5);
         let titles: Vec<String> = self.tabs.iter().map(Tab::title).collect();
         let dirty: Vec<bool> = self.tabs.iter().map(Tab::is_dirty).collect();
+        let kinds: Vec<(Icon, Color32)> = self.tabs.iter().map(|tab| self.tab_kind(tab, look)).collect();
+        let (height, font, active_font, lead, gap) = match style {
+            Chrome::Verre => (40.0, widgets::medium(13.5), widgets::bold(13.5), 40.0, 6.0),
+            Chrome::Ardoise => (strip.height(), widgets::medium(13.5), widgets::semibold(13.5), 31.0, 4.0),
+            Chrome::Porcelaine => (32.0, widgets::medium(13.0), widgets::semibold(13.0), 14.0, 4.0),
+            Chrome::Graphite => (30.0, widgets::medium(13.0), widgets::medium(13.0), 12.0, 2.0),
+            Chrome::Classic => (TAB_HEIGHT, widgets::medium(12.5), widgets::medium(12.5), 12.0, TAB_GAP),
+        };
         // Tabs fit their title, then shrink together when they run out of room.
         let natural: Vec<f32> = titles
             .iter()
-            .map(|title| {
-                let text = ui.fonts_mut(|f| f.layout_no_wrap(title.clone(), font.clone(), chrome.text));
-                (text.size().x + 12.0 + 8.0 + 16.0 + 8.0 + 14.0).clamp(TAB_MIN_WIDTH, TAB_MAX_WIDTH)
+            .enumerate()
+            .map(|(index, title)| {
+                let font = if index == self.active { active_font.clone() } else { font.clone() };
+                let text = ui.fonts_mut(|f| f.layout_no_wrap(title.clone(), font, chrome.text));
+                (text.size().x + lead + 8.0 + 16.0 + 8.0 + 14.0).clamp(TAB_MIN_WIDTH, TAB_MAX_WIDTH + lead)
             })
             .collect();
-        let gaps = TAB_GAP * titles.len().saturating_sub(1) as f32;
+        let inset = if style == Chrome::Porcelaine { 4.0 } else { 0.0 };
+        let gaps = gap * titles.len().saturating_sub(1) as f32 + inset * 2.0;
         let wanted: f32 = natural.iter().sum();
         let scale = ((strip.width() - gaps) / wanted.max(1.0)).min(1.0);
+        if style == Chrome::Porcelaine && !titles.is_empty() {
+            // The segmented control holding the tabs.
+            let width = natural.iter().map(|w| (w * scale).floor()).sum::<f32>() + gaps;
+            let tray = Rect::from_min_size(pos2(strip.left(), center_y - height / 2.0 - inset), vec2(width, height + inset * 2.0));
+            painter.rect_filled(tray, 14.0, Color32::from_rgb(0xe6, 0xe6, 0xe0));
+        }
         let mut close = None;
-        let mut x = strip.left();
+        let mut x = strip.left() + inset;
         for (index, title) in titles.iter().enumerate() {
             let width = (natural[index] * scale).floor();
-            let rect = Rect::from_min_size(pos2(x, center_y - TAB_HEIGHT / 2.0), vec2(width, TAB_HEIGHT));
-            x += width + TAB_GAP;
+            let rect = Rect::from_min_size(pos2(x, center_y - height / 2.0), vec2(width, height));
+            x += width + gap;
             let response = ui.interact(rect, ui.scope_id().with(("tab", index)), Sense::click());
             response.widget_info(|| WidgetInfo::labeled(egui::Role::Button, true, title));
             let active = index == self.active;
-            if active {
-                painter.rect_filled(rect, 7.0, chrome.raised);
-            } else if response.hovered() {
-                painter.rect_filled(rect, 7.0, chrome.hover);
+            let hovered = response.hovered();
+            let (icon, hue) = kinds[index];
+            let [r, g, b, _] = hue.to_array();
+            let tinted = |opacity: u8| Color32::from_rgba_unmultiplied(r, g, b, opacity);
+            match style {
+                Chrome::Verre => {
+                    if active {
+                        painter.rect(rect, 12.0, tinted(51), Stroke::new(1.0, tinted(89)), egui::StrokeKind::Inside);
+                    } else if hovered {
+                        painter.rect_filled(rect, 12.0, theme::alpha(0xffffff, 0.05));
+                    }
+                    let tile = Rect::from_min_size(pos2(rect.left() + 6.0, center_y - 14.0), vec2(28.0, 28.0));
+                    widgets::paint_tile(&painter, tile, hue, icon, true);
+                }
+                Chrome::Ardoise => {
+                    if active {
+                        let line = Rect::from_min_max(pos2(rect.left(), strip.bottom() - 2.0), pos2(rect.right(), strip.bottom()));
+                        painter.rect_filled(line, 0.0, chrome.accent);
+                    } else if hovered {
+                        painter.rect_filled(rect.shrink2(vec2(0.0, 9.0)), 8.0, chrome.hover);
+                    }
+                    painter.rect_filled(Rect::from_center_size(pos2(rect.left() + 18.0, center_y), vec2(8.0, 8.0)), 2.0, hue);
+                }
+                Chrome::Porcelaine => {
+                    if active {
+                        painter.add(egui::Shadow { offset: [0, 1], blur: 3, spread: 0, color: Color32::from_black_alpha(20) }.as_shape(rect, 10));
+                        painter.rect_filled(rect, 10.0, chrome.raised);
+                    } else if hovered {
+                        painter.rect_filled(rect, 10.0, theme::alpha(0xffffff, 0.5));
+                    }
+                }
+                Chrome::Graphite => {
+                    if active {
+                        painter.rect(rect, 7.0, chrome.raised, Stroke::new(1.0, chrome.border), egui::StrokeKind::Inside);
+                    } else if hovered {
+                        painter.rect_filled(rect, 7.0, chrome.hover);
+                    }
+                }
+                Chrome::Classic => {
+                    if active {
+                        painter.rect_filled(rect, 7.0, chrome.raised);
+                    } else if hovered {
+                        painter.rect_filled(rect, 7.0, chrome.hover);
+                    }
+                }
             }
             let color = if active { chrome.text } else { chrome.text_dim };
             let close_rect = icons::square(pos2(rect.right() - 16.0, center_y), 18.0);
-            let mut text_x = rect.left() + 12.0;
+            let mut text_x = rect.left() + lead;
+            let title_font = if active { active_font.clone() } else { font.clone() };
+            let shown = painter.with_clip_rect(rect.with_max_x(close_rect.left() - 2.0));
+            let title_rect = shown.text(pos2(text_x, center_y), Align2::LEFT_CENTER, title, title_font, color);
+            text_x = title_rect.right() + 8.0;
             if dirty[index] {
-                painter.circle_filled(pos2(text_x + 3.0, center_y), 3.0, chrome.warning);
-                text_x += 13.0;
+                let dot = pos2((text_x + 3.0).min(close_rect.left() - 4.0), center_y);
+                let warning = if style == Chrome::Graphite { chrome.text } else { chrome.warning };
+                if style == Chrome::Verre {
+                    let [r, g, b, _] = warning.to_array();
+                    painter.add(egui::Shadow { offset: [0, 0], blur: 8, spread: 0, color: Color32::from_rgba_unmultiplied(r, g, b, 150) }.as_shape(Rect::from_center_size(dot, vec2(7.0, 7.0)), 4));
+                }
+                painter.circle_filled(dot, if style == Chrome::Verre { 3.5 } else { 3.0 }, warning);
             }
-            painter.with_clip_rect(rect.with_max_x(close_rect.left() - 2.0)).text(
-                pos2(text_x, center_y),
-                Align2::LEFT_CENTER,
-                title,
-                font.clone(),
-                color,
-            );
             let close_response = ui.interact(close_rect, ui.scope_id().with(("tab-close", index)), Sense::click());
             close_response.widget_info(|| WidgetInfo::labeled(egui::Role::Button, true, "Fermer l'onglet"));
             if close_response.hovered() {
                 painter.rect_filled(close_rect, 4.0, chrome.hover);
             }
-            if response.hovered() || close_response.hovered() || active {
-                icons::paint(&painter, Icon::Cross, icons::square(close_rect.center(), 12.0), color);
+            if hovered || close_response.hovered() || active {
+                icons::paint(&painter, Icon::Cross, icons::square(close_rect.center(), 12.0), chrome.text_dim);
             }
             if close_response.clicked() || response.middle_clicked() {
                 close = Some(index);
@@ -1864,76 +2044,134 @@ impl App {
         }
     }
 
-    fn status_bar(&mut self, ui: &mut Ui, chrome: &UiPalette, doc: &DocPalette, commands: &mut Vec<Command>) {
-        let bar = ui.max_rect();
-        let mut gradient = egui::Mesh::default();
-        gradient.colored_vertex(bar.left_top(), chrome.status_top);
-        gradient.colored_vertex(bar.right_top(), chrome.status_top);
-        gradient.colored_vertex(bar.right_bottom(), chrome.status_bottom);
-        gradient.colored_vertex(bar.left_bottom(), chrome.status_bottom);
-        gradient.add_triangle(0, 1, 2);
-        gradient.add_triangle(0, 2, 3);
-        ui.painter().add(egui::Shape::mesh(gradient));
-        ui.painter().hline(
-            bar.x_range(),
-            ui.painter().round_to_pixel_center(bar.top() + 0.5),
-            Stroke::new(1.0, chrome.border),
-        );
-        let items = match self.tabs.get(self.active) {
+    fn active_status_items(&self) -> Vec<StatusItem> {
+        match self.tabs.get(self.active) {
             Some(Tab::Text(tab)) => tab.status_items(),
             Some(Tab::Folder(tab)) => tab.status_items(),
             Some(Tab::Merge(tab)) => tab.status_items(),
             None => Vec::new(),
-        };
+        }
+    }
+
+    /// The block being worked on and how many there are, for the dock and the status bar.
+    fn block_rank(&self) -> Option<(usize, usize)> {
+        match self.tabs.get(self.active) {
+            Some(Tab::Text(tab)) => tab.block_rank(),
+            Some(Tab::Merge(tab)) => tab.block_rank(),
+            _ => None,
+        }
+    }
+
+    /// The message of the moment, if any, for the left of the status bar.
+    fn status_message(&mut self, ui: &mut Ui, chrome: &UiPalette, commands: &mut Vec<Command>) {
         let tab_message = match self.tabs.get(self.active) {
             Some(Tab::Text(tab)) => tab.message.clone(),
             Some(Tab::Merge(tab)) => tab.message.clone(),
             _ => None,
         };
         let conflicted = matches!(self.tabs.get(self.active), Some(Tab::Text(tab)) if tab.conflicted_path().is_some());
-        let mut copied = None;
-        ui.horizontal_centered(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            ui.add_space(STATUS_PADDING - 4.0);
-            self.option_toggles(ui, chrome, commands);
-            ui.add_space(12.0);
-            if let Some(message) = self.message.as_ref().or(tab_message.as_ref()) {
-                ui.label(RichText::new(message).color(chrome.error).size(12.0));
-            } else if conflicted {
-                // A file git left in conflict is better resolved than compared.
-                let link = ui
-                    .add(egui::Label::new(RichText::new("Ce fichier contient des conflits : résoudre en fusion à 3 voies").color(chrome.accent).size(12.0)).sense(Sense::click()))
-                    .on_hover_cursor(egui::CursorIcon::PointingHand);
-                if link.clicked() {
-                    commands.push(Command::ResolveConflicts);
-                }
-            } else if let Some((notice, at)) = &self.notice {
-                let age = ui.input(|i| i.time) - at;
-                if age < NOTICE_SECONDS {
-                    ui.label(RichText::new(notice).color(chrome.text_dim).size(12.0));
-                    ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(NOTICE_SECONDS - age));
+        if let Some(message) = self.message.as_ref().or(tab_message.as_ref()) {
+            ui.label(RichText::new(message).color(chrome.error).size(12.0));
+        } else if conflicted {
+            // A file git left in conflict is better resolved than compared.
+            let link = ui
+                .add(egui::Label::new(RichText::new("Ce fichier contient des conflits : résoudre en fusion à 3 voies").color(chrome.accent).size(12.0)).sense(Sense::click()))
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+            if link.clicked() {
+                commands.push(Command::ResolveConflicts);
+            }
+        } else if let Some((notice, at)) = &self.notice {
+            let age = ui.input(|i| i.time) - at;
+            if age < NOTICE_SECONDS {
+                ui.label(RichText::new(notice).color(chrome.text_dim).size(12.0));
+                ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(NOTICE_SECONDS - age));
+            }
+        }
+    }
+
+    fn status_bar(&mut self, ui: &mut Ui, look: &Look, commands: &mut Vec<Command>) {
+        let chrome = &look.ui;
+        let bar = ui.max_rect();
+        match chrome.chrome {
+            Chrome::Classic => {
+                let mut gradient = egui::Mesh::default();
+                gradient.colored_vertex(bar.left_top(), chrome.status_top);
+                gradient.colored_vertex(bar.right_top(), chrome.status_top);
+                gradient.colored_vertex(bar.right_bottom(), chrome.status_bottom);
+                gradient.colored_vertex(bar.left_bottom(), chrome.status_bottom);
+                gradient.add_triangle(0, 1, 2);
+                gradient.add_triangle(0, 2, 3);
+                ui.painter().add(egui::Shape::mesh(gradient));
+                ui.painter().hline(bar.x_range(), ui.painter().round_to_pixel_center(bar.top() + 0.5), Stroke::new(1.0, chrome.border));
+            }
+            Chrome::Graphite => {
+                ui.painter().hline(bar.x_range(), ui.painter().round_to_pixel_center(bar.top() + 0.5), Stroke::new(1.0, Color32::from_rgb(0x22, 0x22, 0x24)));
+            }
+            Chrome::Porcelaine => return self.dock(ui, look, commands),
+            Chrome::Verre | Chrome::Ardoise => {}
+        }
+        let mut items = self.active_status_items();
+        if chrome.chrome == Chrome::Verre {
+            // One chip for the language, the encoding and the line ends, as in the mockup.
+            let mut merged: Vec<StatusItem> = Vec::new();
+            for item in items {
+                match (merged.last_mut(), item) {
+                    (Some(StatusItem::Pill(previous)), StatusItem::Pill(text)) => {
+                        previous.push_str(" · ");
+                        previous.push_str(&text);
+                    }
+                    (_, item) => merged.push(item),
                 }
             }
+            items = merged;
+        }
+        let mut copied = None;
+        let padding = match chrome.chrome {
+            Chrome::Verre | Chrome::Ardoise => 16.0,
+            Chrome::Graphite => 12.0,
+            _ => STATUS_PADDING,
+        };
+        ui.horizontal_centered(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            ui.add_space(padding - 4.0);
+            self.option_toggles(ui, look, commands);
+            ui.add_space(if chrome.chrome == Chrome::Graphite { 12.0 } else { 8.0 });
+            if chrome.chrome == Chrome::Ardoise {
+                code_tone_button(ui, look, commands);
+                ui.add_space(4.0);
+            }
+            size_control(ui, look, self.code_size, commands);
+            ui.add_space(12.0);
+            self.status_message(ui, chrome, commands);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
-                ui.add_space(STATUS_PADDING - 8.0);
+                ui.add_space(padding - 8.0);
                 // From the right, most useful first: what no longer fits is left out.
+                let separated = chrome.chrome == Chrome::Ardoise;
+                let mut first = true;
                 for item in items.iter().rev() {
+                    if chrome.chrome == Chrome::Graphite && matches!(item, StatusItem::Pill(_)) {
+                        // In the band, beside the field.
+                        continue;
+                    }
                     let needed = match item {
-                        StatusItem::Text(text) => text_width(ui, text, FontId::proportional(12.0)),
+                        StatusItem::Text(text) => text_width(ui, text, FontId::proportional(12.5)),
                         StatusItem::Path(text) => text_width(ui, &elide_path(text), FontId::monospace(11.5)),
                         StatusItem::Pill(text) => text_width(ui, text, widgets::medium(11.5)) + PILL_PADDING,
-                        StatusItem::Counts { .. } => 0.0,
+                        StatusItem::Counts { .. } => 120.0,
                         StatusItem::Conflicts { unresolved, .. } => text_width(ui, &conflicts_text(*unresolved), widgets::medium(11.5)) + PILL_PADDING,
                     };
                     if needed + 8.0 > ui.available_width() {
                         break;
                     }
+                    if separated && !std::mem::take(&mut first) {
+                        ui.label(RichText::new("·").color(Color32::from_rgb(0x5a, 0x61, 0x6e)).size(12.5));
+                    }
                     match item {
                         StatusItem::Text(text) => {
-                            ui.label(RichText::new(text).color(chrome.text_dim).size(12.0));
+                            ui.label(RichText::new(text).color(chrome.text_dim).size(12.5));
                         }
-                        StatusItem::Pill(text) => pill(ui, chrome, text),
+                        StatusItem::Pill(text) => pill(ui, look, text),
                         StatusItem::Path(path) => {
                             let response = ui
                                 .add(
@@ -1948,11 +2186,30 @@ impl App {
                             }
                         }
                         StatusItem::Counts { deletions, insertions, changes } => {
-                            counts(ui, chrome, doc, [*deletions, *insertions, *changes]);
+                            counts(ui, look, [*deletions, *insertions, *changes]);
                         }
-                        StatusItem::Conflicts { unresolved, total } => conflicts_pill(ui, chrome, doc, *unresolved, *total),
+                        StatusItem::Conflicts { unresolved, total } => conflicts_pill(ui, look, *unresolved, *total),
                     }
-                    ui.add_space(6.0);
+                    if !separated {
+                        ui.add_space(6.0);
+                    }
+                }
+                if chrome.chrome == Chrome::Graphite {
+                    let hints: &[(&str, &str)] = match self.tabs.get(self.active) {
+                        Some(Tab::Merge(_)) => &[("F8", "conflit suivant"), ("Ctrl →", "prendre la gauche")],
+                        Some(Tab::Folder(_)) => &[("Ctrl →", "copier à droite")],
+                        Some(Tab::Text(_)) => &[("Ctrl ↓", "bloc suivant"), ("Ctrl →", "envoyer")],
+                        None => &[],
+                    };
+                    ui.label(RichText::new("|").color(Color32::from_rgb(0x3a, 0x3a, 0x3d)).size(12.0));
+                    for (keys, what) in hints.iter().rev() {
+                        if ui.available_width() < 160.0 {
+                            break;
+                        }
+                        ui.label(RichText::new(*what).color(chrome.text_dim).size(12.0));
+                        ui.label(RichText::new(*keys).font(FontId::monospace(11.5)).color(chrome.text));
+                        ui.add_space(6.0);
+                    }
                 }
             });
         });
@@ -1961,33 +2218,180 @@ impl App {
         }
     }
 
-    /// The main comparison options, lit when active.
-    fn option_toggles(&self, ui: &mut Ui, chrome: &UiPalette, commands: &mut Vec<Command>) {
+    /// Porcelaine's floating dock: block navigation, counts, the main options and the code size,
+    /// in one pill at the bottom centre. What the status bar says otherwise sits in the corners.
+    fn dock(&mut self, ui: &mut Ui, look: &Look, commands: &mut Vec<Command>) {
+        let chrome = &look.ui;
+        let bar = ui.max_rect();
+        let items = self.active_status_items();
+        let toggles = self.toggle_list();
+        const BUTTON: f32 = 36.0;
+        let rank = self.block_rank().map(|(current, total)| format!("{current} sur {total}"));
+        let rank_width = rank.as_ref().map_or(0.0, |rank| text_width(ui, rank, widgets::semibold(12.5)).max(48.0) + 16.0);
+        let counts_values = items.iter().find_map(|item| match item {
+            StatusItem::Counts { deletions, insertions, changes } => Some([*changes, *insertions, *deletions]),
+            _ => None,
+        });
+        let counts_width = counts_values.map_or(0.0, |values| {
+            values.iter().map(|value| text_width(ui, &value.to_string(), widgets::semibold(12.5)) + 27.0).sum::<f32>()
+        });
+        let size_text = format!("{}", self.code_size.round());
+        let separator = 9.0;
+        let has_blocks = rank.is_some() || matches!(self.tabs.get(self.active), Some(Tab::Text(_) | Tab::Merge(_)));
+        let mut width = 16.0;
+        if has_blocks {
+            width += BUTTON * 2.0 + rank_width + separator;
+        }
+        if counts_values.is_some() {
+            width += counts_width + separator;
+        }
+        width += toggles.len() as f32 * (BUTTON + 2.0) + separator;
+        width += BUTTON * 2.0 + 30.0;
+        let dock = Rect::from_center_size(pos2(bar.center().x, bar.bottom() - 22.0 - 26.0), vec2(width, 52.0));
+        let painter = ui.painter();
+        painter.add(egui::Shadow { offset: [0, 12], blur: 36, spread: 0, color: Color32::from_black_alpha(36) }.as_shape(dock, 26));
+        painter.rect(dock, 26.0, theme::alpha(0xffffff, 0.94), Stroke::new(1.0, theme::alpha(0x000000, 0.06)), egui::StrokeKind::Inside);
+        let y = dock.center().y;
+        let mut x = dock.left() + 8.0;
+        let rule = |painter: &egui::Painter, x: &mut f32| {
+            painter.vline(*x + separator / 2.0, y - 12.0..=y + 12.0, Stroke::new(1.0, Color32::from_rgb(0xe3, 0xe3, 0xdd)));
+            *x += separator;
+        };
+        let round_button = |ui: &mut Ui, x: &mut f32, id: &str, icon: Option<Icon>, text: Option<(&str, f32)>, lit: bool, tip: &str| -> bool {
+            let rect = Rect::from_min_size(pos2(*x, y - BUTTON / 2.0), vec2(BUTTON, BUTTON));
+            *x += BUTTON + 2.0;
+            let response = ui.interact(rect, ui.scope_id().with(("dock", id)), Sense::click());
+            response.widget_info(|| WidgetInfo::labeled(egui::Role::Button, true, tip));
+            let hovered = response.hovered();
+            let (fill, color) = if lit { (chrome.lit, chrome.lit_text) } else if hovered { (chrome.hover, chrome.text) } else { (Color32::TRANSPARENT, chrome.text_dim) };
+            ui.painter().rect_filled(rect, BUTTON / 2.0, fill);
+            if let Some(icon) = icon {
+                icons::paint(ui.painter(), icon, icons::square(rect.center(), 16.0), color);
+            }
+            if let Some((text, size)) = text {
+                ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, widgets::bold(size), chrome.text);
+            }
+            response.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+        };
+        if has_blocks {
+            if round_button(ui, &mut x, "previous", Some(Icon::ChevronUp), None, false, "Différence précédente (Ctrl+↑)") {
+                commands.push(Command::PreviousBlock);
+            }
+            if let Some(rank) = &rank {
+                ui.painter().text(pos2(x + rank_width / 2.0 - 1.0, y), Align2::CENTER_CENTER, rank, widgets::semibold(12.5), chrome.text);
+            }
+            x += rank_width;
+            if round_button(ui, &mut x, "next", Some(Icon::ChevronDown), None, false, "Différence suivante (Ctrl+↓)") {
+                commands.push(Command::NextBlock);
+            }
+            rule(ui.painter(), &mut x);
+        }
+        if let Some(values) = counts_values {
+            let colors = [look.gap.change.mark, look.gap.insert.mark, look.gap.delete.mark];
+            let words = ["modifications", "ajouts", "retraits"];
+            for index in 0..3 {
+                let text = values[index].to_string();
+                let start = x + 6.0;
+                ui.painter().circle_filled(pos2(start + 4.5, y), 4.5, colors[index]);
+                let label = ui.painter().text(pos2(start + 15.0, y), Align2::LEFT_CENTER, &text, widgets::semibold(12.5), chrome.text);
+                let hover = ui.interact(Rect::from_min_max(pos2(start, y - 10.0), pos2(label.right(), y + 10.0)), ui.scope_id().with(("dock-count", index)), Sense::hover());
+                hover.on_hover_text(format!("{text} {}", words[index]));
+                x = label.right() + 6.0;
+            }
+            x = x.max(dock.left());
+            rule(ui.painter(), &mut x);
+        }
+        for toggle in &toggles {
+            if round_button(ui, &mut x, toggle.tip, Some(toggle.icon), None, toggle.lit, toggle.tip) {
+                commands.push(toggle.command);
+            }
+        }
+        rule(ui.painter(), &mut x);
+        if round_button(ui, &mut x, "smaller", None, Some(("A−", 12.0)), false, "Réduire le texte") {
+            commands.push(Command::ChangeCodeSize(-1.0));
+        }
+        let size_rect = Rect::from_min_size(pos2(x - 2.0, y - 12.0), vec2(28.0, 24.0));
+        ui.painter().text(size_rect.center(), Align2::CENTER_CENTER, &size_text, widgets::semibold(12.5), chrome.text);
+        let size_response = ui.interact(size_rect, ui.scope_id().with("dock-size"), Sense::click());
+        size_response.widget_info(|| WidgetInfo::labeled(egui::Role::Button, true, "Taille du code"));
+        if size_response.on_hover_text("Taille du code : un clic revient à la taille par défaut").clicked() {
+            commands.push(Command::ResetCodeSize);
+        }
+        x += 28.0;
+        if round_button(ui, &mut x, "larger", None, Some(("A+", 15.0)), false, "Agrandir le texte") {
+            commands.push(Command::ChangeCodeSize(1.0));
+        }
+        // The corners: the message of the moment on the left, the facts of the file on the right.
+        let left = Rect::from_min_max(pos2(bar.left() + 26.0, dock.top()), pos2(dock.left() - 16.0, dock.bottom()));
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(left).layout(egui::Layout::left_to_right(egui::Align::Center)));
+        child.set_clip_rect(left);
+        self.status_message(&mut child, chrome, commands);
+        let right = Rect::from_min_max(pos2(dock.right() + 16.0, dock.top()), pos2(bar.right() - 26.0, dock.bottom()));
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(right).layout(egui::Layout::right_to_left(egui::Align::Center)));
+        child.set_clip_rect(right);
+        for item in &items {
+            if let StatusItem::Conflicts { unresolved, total } = item {
+                conflicts_pill(&mut child, look, *unresolved, *total);
+            }
+        }
+        // The facts of the file in their order, as many as fit.
+        let font = FontId::proportional(12.0);
+        let room = child.available_width();
+        let mut line = String::new();
+        for item in &items {
+            if let StatusItem::Text(text) | StatusItem::Pill(text) = item {
+                let longer = if line.is_empty() { text.clone() } else { format!("{line} · {text}") };
+                if text_width(&child, &longer, font.clone()) > room {
+                    break;
+                }
+                line = longer;
+            }
+        }
+        child.label(RichText::new(line).font(font).color(chrome.text_faint));
+    }
+
+    /// The comparison options shown lit when active: in the status bar or Porcelaine's dock.
+    fn toggle_list(&self) -> Vec<Toggle> {
         let whitespace = self.diff_options.whitespace;
         let (next, tip) = match whitespace {
             Whitespace::Exact => (Whitespace::IgnoreTrailing, "Espaces : tous comparés"),
             Whitespace::IgnoreTrailing => (Whitespace::IgnoreAll, "Espaces : fins de ligne ignorées"),
             Whitespace::IgnoreAll => (Whitespace::Exact, "Espaces : tous ignorés"),
         };
-        let mut toggle = |ui: &mut Ui, icon, lit, tip: &str, command| {
-            if option_toggle(ui, chrome, icon, lit, tip).clicked() {
-                commands.push(command);
-            }
-        };
-        toggle(ui, Icon::Whitespace, whitespace != Whitespace::Exact, tip, Command::SetWhitespace(next));
-        toggle(ui, Icon::Case, self.diff_options.ignore_case, "Ignorer la casse", Command::ToggleCase);
-        toggle(ui, Icon::Ignore, !self.compiled_rules.is_empty(), "Règles d'ignorance…", Command::OpenIgnoreRules);
-        toggle(ui, Icon::Wrap, self.shown_wrap(), "Retour à la ligne (Alt+Z)", Command::ToggleWrap);
-        toggle(ui, Icon::Align, self.aligned_lines, "Aligner les lignes (Alt+L)", Command::ToggleAligned);
-        toggle(ui, Icon::Fold, self.context_only, "Différences seules (Alt+D)", Command::ToggleContext);
-        toggle(ui, Icon::Funnel, self.differences_only, "Dossiers : différences seulement", Command::ToggleDifferencesOnly);
-        toggle(ui, Icon::EyeOff, self.scan_options.respect_gitignore, "Dossiers : respecter .gitignore", Command::ToggleGitignore);
+        let mut toggles = vec![
+            Toggle { icon: Icon::Whitespace, short: "Espaces", lit: whitespace != Whitespace::Exact, tip, command: Command::SetWhitespace(next) },
+            Toggle { icon: Icon::Case, short: "Casse", lit: self.diff_options.ignore_case, tip: "Ignorer la casse", command: Command::ToggleCase },
+            Toggle { icon: Icon::Ignore, short: "Règles", lit: !self.compiled_rules.is_empty(), tip: "Règles d'ignorance…", command: Command::OpenIgnoreRules },
+            Toggle { icon: Icon::Wrap, short: "Retour ligne", lit: self.shown_wrap(), tip: "Retour à la ligne (Alt+Z)", command: Command::ToggleWrap },
+            Toggle { icon: Icon::Align, short: "Aligner", lit: self.aligned_lines, tip: "Aligner les lignes (Alt+L)", command: Command::ToggleAligned },
+            Toggle { icon: Icon::Fold, short: "Différences seules", lit: self.context_only, tip: "Différences seules (Alt+D)", command: Command::ToggleContext },
+            Toggle { icon: Icon::Funnel, short: "Dossiers : différences", lit: self.differences_only, tip: "Dossiers : différences seulement", command: Command::ToggleDifferencesOnly },
+            Toggle { icon: Icon::EyeOff, short: ".gitignore", lit: self.scan_options.respect_gitignore, tip: "Dossiers : respecter .gitignore", command: Command::ToggleGitignore },
+        ];
         // Only where it means something: a JSON tab, a merge.
         if let Some(Tab::Text(tab)) = self.tabs.get(self.active).filter(|tab| matches!(tab, Tab::Text(t) if t.is_json())) {
-            toggle(ui, Icon::Braces, tab.is_structural(), "Comparaison structurelle JSON", Command::ToggleJsonStructural);
+            toggles.push(Toggle { icon: Icon::Braces, short: "JSON", lit: tab.is_structural(), tip: "Comparaison structurelle JSON", command: Command::ToggleJsonStructural });
         }
         if let Some(Tab::Merge(tab)) = self.tabs.get(self.active) {
-            toggle(ui, Icon::History, tab.shows_base(), "Afficher l'ancêtre commun (Alt+B)", Command::ToggleBase);
+            toggles.push(Toggle { icon: Icon::History, short: "Ancêtre", lit: tab.shows_base(), tip: "Afficher l'ancêtre commun (Alt+B)", command: Command::ToggleBase });
+        }
+        toggles
+    }
+
+    /// The main comparison options, lit when active.
+    fn option_toggles(&self, ui: &mut Ui, look: &Look, commands: &mut Vec<Command>) {
+        let toggles = self.toggle_list();
+        let mut show = |ui: &mut Ui| {
+            for toggle in &toggles {
+                if option_toggle(ui, look, toggle).clicked() {
+                    commands.push(toggle.command);
+                }
+            }
+        };
+        if look.ui.chrome == Chrome::Verre {
+            glass_tray(ui, look, show);
+        } else {
+            show(ui);
         }
     }
 
@@ -2568,8 +2972,9 @@ impl App {
 
     pub fn root(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
-        let chrome = UiPalette::get(self.mode);
-        let doc = DocPalette::get(self.mode);
+        let look = self.look;
+        let chrome = look.ui;
+        let metrics = look.metrics;
         let mut commands = Vec::new();
 
         if ctx.input(|i| i.viewport().close_requested())
@@ -2592,26 +2997,33 @@ impl App {
             || matches!(self.tabs.get(self.active), Some(Tab::Text(tab)) if tab.wants_dialog());
         if !modal_open {
             self.handle_shortcuts(&ctx);
+            self.zoom_with_wheel(&ctx);
         }
+
+        // The window itself, under everything: Verre's glass lets the compositor's blur show,
+        // with Biodrive's rounded corners and light edge; other themes are solid.
+        let window = ui.max_rect();
+        let radius = if look.translucent { metrics.window_radius } else { 0 };
+        ui.painter().rect(window, radius, chrome.window, Stroke::new(1.0, chrome.window_border), egui::StrokeKind::Inside);
 
         Panel::top("band")
             .frame(Frame::new().fill(chrome.panel))
-            .exact_size(BAND_HEIGHT)
+            .exact_size(metrics.band_height)
             .show_separator_line(false)
-            .show(ui, |ui| self.band(ui, &chrome, &mut commands));
+            .show(ui, |ui| self.band(ui, &look, &mut commands));
         Panel::bottom("status-bar")
             .frame(Frame::new().fill(chrome.panel))
-            .exact_size(STATUS_BAR_HEIGHT)
+            .exact_size(metrics.status_height)
             .show_separator_line(false)
-            .show(ui, |ui| self.status_bar(ui, &chrome, &doc, &mut commands));
+            .show(ui, |ui| self.status_bar(ui, &look, &mut commands));
         let mut open_files = None;
         let code_size = self.code_size;
         egui::CentralPanel::default()
             .frame(Frame::new().fill(chrome.background))
             .show(ui, |ui| match self.tabs.get_mut(self.active) {
-                Some(Tab::Text(tab)) => tab.show(ui, &chrome, &doc, code_size),
-                Some(Tab::Folder(tab)) => open_files = tab.show(ui, &chrome, &doc).map(|FolderAction::Open(paths)| paths),
-                Some(Tab::Merge(tab)) => tab.show(ui, &chrome, &doc, code_size),
+                Some(Tab::Text(tab)) => tab.show(ui, &look, code_size),
+                Some(Tab::Folder(tab)) => open_files = tab.show(ui, &look).map(|FolderAction::Open(paths)| paths),
+                Some(Tab::Merge(tab)) => tab.show(ui, &look, code_size),
                 None => self.welcome(ui, &chrome, &mut commands),
             });
         // Saves happen inside a merge tab too (its header, its question): its launch must know.
@@ -2627,8 +3039,8 @@ impl App {
     }
 
     #[cfg(test)]
-    pub fn set_mode(&mut self, ctx: &egui::Context, mode: Mode) {
-        self.run(ctx, Command::SetTheme(mode));
+    pub fn set_theme(&mut self, ctx: &egui::Context, kind: ThemeKind) {
+        self.run(ctx, Command::SetTheme(kind));
     }
 
     #[cfg(test)]
@@ -2677,29 +3089,6 @@ fn merge_inputs(request: MergeRequest) -> MergeInputs {
     MergeInputs::Files { base, local, remote, merged, labels }
 }
 
-fn option_toggle(ui: &mut Ui, chrome: &UiPalette, icon: Icon, lit: bool, tip: &str) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(TOGGLE_SIZE, Sense::click());
-    response.widget_info(|| WidgetInfo::labeled(egui::Role::Button, true, tip));
-    let hovered = response.hovered();
-    let painter = ui.painter();
-    if lit {
-        let fill = mix(chrome.status_top, chrome.accent, if hovered { 0.3 } else { 0.2 });
-        let border = mix(chrome.status_top, chrome.accent, 0.55);
-        painter.rect(rect, 6.0, fill, Stroke::new(1.0, border), egui::StrokeKind::Inside);
-    } else if hovered {
-        painter.rect_filled(rect, 6.0, chrome.hover);
-    }
-    let color = if lit {
-        chrome.accent
-    } else if hovered {
-        chrome.text
-    } else {
-        chrome.text_dim
-    };
-    icons::paint(painter, icon, icons::square(rect.center(), 16.0), color);
-    response.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand)
-}
-
 /// A long JSON path keeps its end, which tells where the line is.
 fn elide_path(path: &str) -> String {
     const MAX: usize = 64;
@@ -2717,20 +3106,213 @@ fn text_width(ui: &Ui, text: &str, font: FontId) -> f32 {
         .x
 }
 
-fn pill(ui: &mut Ui, chrome: &UiPalette, text: &str) {
-    let font = widgets::medium(11.5);
-    let galley = ui.fonts_mut(|fonts| fonts.layout_no_wrap(text.to_owned(), font, chrome.text_dim));
-    let (rect, _) = ui.allocate_exact_size(vec2((galley.size().x + PILL_PADDING).round(), PILL_HEIGHT), Sense::hover());
+/// One option of the status bar: its icon, its short name for Graphite's words, and its tip,
+/// which is also its accessible name.
+struct Toggle {
+    icon: Icon,
+    short: &'static str,
+    lit: bool,
+    tip: &'static str,
+    command: Command,
+}
+
+/// The rounded tray Verre gathers buttons in.
+fn glass_tray(ui: &mut Ui, look: &Look, add: impl FnOnce(&mut Ui)) {
+    tray(ui, theme::alpha(0xffffff, 0.045), Stroke::new(1.0, look.ui.card_border), 14.0, 4.0, 38.0, add);
+}
+
+/// A rounded tray behind buttons laid out in a row: as tall as `height`, as wide as what `add`
+/// lays out, `margin` around it. Painted underneath once the width is known.
+fn tray(ui: &mut Ui, fill: Color32, stroke: Stroke, radius: f32, margin: f32, height: f32, add: impl FnOnce(&mut Ui)) {
+    let slot = ui.painter().add(egui::Shape::Noop);
+    let left = ui.cursor().min.x;
+    ui.add_space(margin);
+    let spacing = ui.spacing().item_spacing.x;
+    add(ui);
+    let right = ui.cursor().min.x - spacing + margin;
+    ui.add_space(margin);
+    let y = ui.max_rect().center().y;
+    let rect = Rect::from_min_max(pos2(left, y - height / 2.0), pos2(right, y + height / 2.0));
+    ui.painter().set(slot, egui::epaint::RectShape::new(rect, radius, fill, stroke, egui::StrokeKind::Inside));
+}
+
+fn option_toggle(ui: &mut Ui, look: &Look, toggle: &Toggle) -> egui::Response {
+    let chrome = &look.ui;
+    let lit = toggle.lit;
+    if chrome.chrome == Chrome::Graphite {
+        // Graphite names its options in words.
+        let font = FontId::proportional(12.0);
+        let width = text_width(ui, toggle.short, font.clone()) + 16.0;
+        let (rect, response) = ui.allocate_exact_size(vec2(width, 24.0), Sense::click());
+        response.widget_info(|| WidgetInfo::labeled(egui::Role::Button, true, toggle.tip));
+        let hovered = response.hovered();
+        if lit || hovered {
+            ui.painter().rect_filled(rect, 5.0, if lit { chrome.lit } else { chrome.hover });
+        }
+        let color = if lit || hovered { chrome.text } else { chrome.text_dim };
+        ui.painter().text(rect.center(), Align2::CENTER_CENTER, toggle.short, font, color);
+        return response.on_hover_text(toggle.tip).on_hover_cursor(egui::CursorIcon::PointingHand);
+    }
+    let (size, radius) = match chrome.chrome {
+        Chrome::Verre => (vec2(34.0, 30.0), 10.0),
+        Chrome::Ardoise => (vec2(32.0, 28.0), 8.0),
+        _ => (TOGGLE_SIZE, 6.0),
+    };
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    response.widget_info(|| WidgetInfo::labeled(egui::Role::Button, true, toggle.tip));
+    let hovered = response.hovered();
     let painter = ui.painter();
-    painter.rect(
-        rect,
-        PILL_HEIGHT / 2.0,
-        mix(chrome.status_top, chrome.hover, 0.5),
-        Stroke::new(1.0, chrome.border),
-        egui::StrokeKind::Inside,
-    );
+    if lit {
+        let fill = if hovered { mix(chrome.lit, chrome.lit_text, 0.12) } else { chrome.lit };
+        painter.rect(rect, radius, fill, Stroke::new(1.0, chrome.lit_border), egui::StrokeKind::Inside);
+    } else if hovered {
+        painter.rect_filled(rect, radius, chrome.hover);
+    }
+    let color = if lit {
+        chrome.lit_text
+    } else if hovered {
+        chrome.text
+    } else {
+        chrome.text_dim
+    };
+    icons::paint(painter, toggle.icon, icons::square(rect.center(), 16.0), color);
+    response.on_hover_text(toggle.tip).on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// A− 13 A+: the code size at a glance, a click away in every tab. A click on the number goes
+/// back to the default size.
+fn size_control(ui: &mut Ui, look: &Look, size: f32, commands: &mut Vec<Command>) {
+    let chrome = &look.ui;
+    let style = chrome.chrome;
+    let number = match style {
+        Chrome::Verre | Chrome::Graphite => format!("{} px", size.round()),
+        _ => format!("{}", size.round()),
+    };
+    let mut body = |ui: &mut Ui| {
+        let (button, height) = match style {
+            Chrome::Verre => (vec2(30.0, 30.0), 30.0),
+            Chrome::Graphite => (vec2(24.0, 24.0), 24.0),
+            _ => (vec2(30.0, 26.0), 26.0),
+        };
+        let step = |ui: &mut Ui, text: &str, glyph: f32, tip: &str| -> bool {
+            let (rect, response) = ui.allocate_exact_size(button, Sense::click());
+            response.widget_info(|| WidgetInfo::labeled(egui::Role::Button, true, tip));
+            let hovered = response.hovered();
+            if style == Chrome::Graphite {
+                ui.painter().rect(rect, 5.0, if hovered { chrome.hover } else { Color32::TRANSPARENT }, Stroke::new(1.0, chrome.border), egui::StrokeKind::Inside);
+            } else if hovered {
+                ui.painter().rect_filled(rect, if style == Chrome::Verre { 10.0 } else { 6.0 }, chrome.hover);
+            }
+            let color = if hovered { chrome.text } else { mix(chrome.text_dim, chrome.text, 0.4) };
+            ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, widgets::bold(glyph), color);
+            response.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+        };
+        let (smaller, larger) = if style == Chrome::Graphite { ("−", "+") } else { ("A−", "A+") };
+        if step(ui, smaller, 12.0, "Réduire le texte (Ctrl+-)") {
+            commands.push(Command::ChangeCodeSize(-1.0));
+        }
+        let font = if style == Chrome::Graphite { FontId::monospace(12.0) } else { widgets::semibold(12.5) };
+        let width = text_width(ui, &number, font.clone()).max(if style == Chrome::Verre { 44.0 } else { 26.0 }) + 8.0;
+        let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::click());
+        response.widget_info(|| WidgetInfo::labeled(egui::Role::Button, true, "Taille du code"));
+        if style == Chrome::Ardoise {
+            for x in [rect.left(), rect.right()] {
+                ui.painter().vline(ui.painter().round_to_pixel_center(x), rect.y_range(), Stroke::new(1.0, chrome.border));
+            }
+        }
+        ui.painter().text(rect.center(), Align2::CENTER_CENTER, &number, font, chrome.text);
+        if response.on_hover_text("Taille du code : un clic revient à la taille par défaut (Ctrl+0)").clicked() {
+            commands.push(Command::ResetCodeSize);
+        }
+        if step(ui, larger, 15.0, "Agrandir le texte (Ctrl++)") {
+            commands.push(Command::ChangeCodeSize(1.0));
+        }
+    };
+    match style {
+        Chrome::Verre => glass_tray(ui, look, body),
+        Chrome::Ardoise => tray(ui, Color32::TRANSPARENT, Stroke::new(1.0, chrome.border), 8.0, 0.0, 28.0, body),
+        _ => body(ui),
+    }
+}
+
+/// Ardoise et papier's switch between light and dark code, in its status bar.
+fn code_tone_button(ui: &mut Ui, look: &Look, commands: &mut Vec<Command>) {
+    let chrome = &look.ui;
+    let (icon, text, other) = if look.doc.dark {
+        (Icon::Moon, "Code sombre", CodeTone::Light)
+    } else {
+        (Icon::Sun, "Code clair", CodeTone::Dark)
+    };
+    let font = widgets::semibold(12.0);
+    let width = text_width(ui, text, font.clone()) + 41.0;
+    let (rect, response) = ui.allocate_exact_size(vec2(width, 28.0), Sense::click());
+    response.widget_info(|| WidgetInfo::labeled(egui::Role::Button, true, "Code sombre ou clair"));
+    let fill = if response.hovered() { chrome.hover } else { Color32::TRANSPARENT };
+    ui.painter().rect(rect, 8.0, fill, Stroke::new(1.0, chrome.border), egui::StrokeKind::Inside);
+    icons::paint(ui.painter(), icon, icons::square(pos2(rect.left() + 17.0, rect.center().y), 14.0), chrome.text_dim);
+    ui.painter().text(pos2(rect.left() + 31.0, rect.center().y), Align2::LEFT_CENTER, text, font, mix(chrome.text_dim, chrome.text, 0.5));
+    if response.on_hover_text("Code sombre ou clair").on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+        commands.push(Command::SetCodeTone(other));
+    }
+}
+
+/// The frame of the band's field, in the theme's style.
+fn field_frame(ui: &Ui, look: &Look, rect: Rect, focused: bool, hovered: bool, invalid: bool) {
+    let chrome = &look.ui;
+    let radius = match chrome.chrome {
+        Chrome::Verre => 11.0,
+        Chrome::Ardoise => 9.0,
+        Chrome::Porcelaine => 12.0,
+        Chrome::Graphite => 8.0,
+        Chrome::Classic => 7.0,
+    };
+    let rest = match chrome.chrome {
+        Chrome::Verre => theme::alpha(0xffffff, 0.12),
+        Chrome::Ardoise => Color32::from_rgb(0x26, 0x2b, 0x34),
+        Chrome::Porcelaine => theme::alpha(0x000000, 0.06),
+        _ => chrome.border,
+    };
+    let border = if invalid {
+        chrome.error
+    } else if focused {
+        chrome.accent
+    } else if hovered {
+        mix(rest, chrome.text_dim, 0.4)
+    } else {
+        rest
+    };
+    let painter = ui.painter();
+    if focused {
+        painter.rect_stroke(rect, radius, Stroke::new(3.0, chrome.accent.gamma_multiply(0.22)), egui::StrokeKind::Outside);
+    }
+    if chrome.chrome == Chrome::Porcelaine {
+        painter.add(egui::Shadow { offset: [0, 1], blur: 3, spread: 0, color: Color32::from_black_alpha(15) }.as_shape(rect, radius as u8));
+    }
+    painter.rect(rect, radius, chrome.input, Stroke::new(1.0, border), egui::StrokeKind::Inside);
+}
+
+fn pill(ui: &mut Ui, look: &Look, text: &str) {
+    let chrome = &look.ui;
+    if chrome.chrome == Chrome::Ardoise {
+        ui.label(RichText::new(text).color(chrome.text_dim).size(12.5));
+        return;
+    }
+    let font = widgets::medium(11.5);
+    let color = if chrome.chrome == Chrome::Verre { chrome.text_dim } else { chrome.text_dim };
+    let galley = ui.fonts_mut(|fonts| fonts.layout_no_wrap(text.to_owned(), font, color));
+    let height = if chrome.chrome == Chrome::Verre { 24.0 } else { PILL_HEIGHT };
+    let (rect, _) = ui.allocate_exact_size(vec2((galley.size().x + PILL_PADDING).round(), height), Sense::hover());
+    let painter = ui.painter();
+    match chrome.chrome {
+        Chrome::Verre => {
+            painter.rect_filled(rect, 8.0, theme::alpha(0xffffff, 0.06));
+        }
+        _ => {
+            painter.rect(rect, PILL_HEIGHT / 2.0, mix(chrome.status_top, chrome.hover, 0.5), Stroke::new(1.0, chrome.border), egui::StrokeKind::Inside);
+        }
+    }
     let position = rect.center() - galley.size() / 2.0;
-    painter.galley(position, galley, chrome.text_dim);
+    painter.galley(position, galley, color);
 }
 
 fn conflicts_text(unresolved: usize) -> String {
@@ -2742,12 +3324,15 @@ fn conflicts_text(unresolved: usize) -> String {
 }
 
 /// The conflicts left to resolve, in the conflict colour; calm once there are none.
-fn conflicts_pill(ui: &mut Ui, chrome: &UiPalette, doc: &DocPalette, unresolved: usize, total: usize) {
+fn conflicts_pill(ui: &mut Ui, look: &Look, unresolved: usize, total: usize) {
+    let chrome = &look.ui;
+    let mark = look.gap.conflict.mark;
     let font = widgets::medium(11.5);
+    let [r, g, b, _] = mark.to_array();
     let (fill, border, color) = if unresolved > 0 {
-        (mix(chrome.status_top, doc.conflict.mark, 0.18), mix(chrome.status_top, doc.conflict.mark, 0.6), doc.conflict.mark)
+        (Color32::from_rgba_unmultiplied(r, g, b, 40), Color32::from_rgba_unmultiplied(r, g, b, 150), mark)
     } else {
-        (mix(chrome.status_top, chrome.hover, 0.5), chrome.border, chrome.text_dim)
+        (chrome.hover, chrome.border, chrome.text_dim)
     };
     let galley = ui.fonts_mut(|fonts| fonts.layout_no_wrap(conflicts_text(unresolved), font, color));
     let (rect, response) = ui.allocate_exact_size(vec2((galley.size().x + PILL_PADDING).round(), PILL_HEIGHT), Sense::hover());
@@ -2760,19 +3345,64 @@ fn conflicts_pill(ui: &mut Ui, chrome: &UiPalette, doc: &DocPalette, unresolved:
     response.on_hover_text(tip);
 }
 
-/// Removals, insertions and modifications, each after a dot of its colour.
-fn counts(ui: &mut Ui, chrome: &UiPalette, doc: &DocPalette, values: [usize; 3]) {
-    let words = ["retraits", "ajouts", "modifications"];
-    let colors = [doc.delete.mark, doc.insert.mark, doc.change.mark];
-    // Laid out right to left.
-    for index in (0..3).rev() {
-        let text = values[index].to_string();
-        let label = ui.label(RichText::new(&text).font(widgets::medium(12.0)).color(chrome.text));
-        let (dot, _) = ui.allocate_exact_size(vec2(8.0, 8.0), Sense::hover());
-        ui.painter().circle_filled(dot.center(), 3.5, colors[index]);
-        let tip = format!("{text} {}", words[index]);
-        label.on_hover_text(tip);
-        ui.add_space(4.0);
+/// Modifications, insertions and removals, each after a dot of its colour: glowing in Verre's
+/// pill, square in Ardoise et papier and Graphite.
+fn counts(ui: &mut Ui, look: &Look, values: [usize; 3]) {
+    let chrome = &look.ui;
+    let style = chrome.chrome;
+    // Shown left to right: modifications, insertions, removals; `values` holds them the other
+    // way round.
+    let shown = [values[2], values[1], values[0]];
+    let colors = [look.gap.change.mark, look.gap.insert.mark, look.gap.delete.mark];
+    let words = ["modifications", "ajouts", "retraits"];
+    let label = |index: usize, value: usize| -> String {
+        if style != Chrome::Verre {
+            return value.to_string();
+        }
+        let plural = if value > 1 { "s" } else { "" };
+        match index {
+            0 => format!("{value} modifié{plural}"),
+            1 => format!("{value} ajout{plural}"),
+            _ => format!("{value} retrait{plural}"),
+        }
+    };
+    let font = if style == Chrome::Verre { widgets::semibold(12.5) } else { widgets::medium(12.0) };
+    let texts: Vec<String> = (0..3).map(|index| label(index, shown[index])).collect();
+    let widths: Vec<f32> = texts.iter().map(|text| text_width(ui, text, font.clone())).collect();
+    let (dot, gap, pad) = if style == Chrome::Verre { (8.0, 7.0, 14.0) } else { (8.0, 5.0, 0.0) };
+    let spacing = if style == Chrome::Verre { 14.0 } else { 9.0 };
+    let width = widths.iter().map(|w| dot + gap + w).sum::<f32>() + spacing * 2.0 + pad * 2.0;
+    let height = if style == Chrome::Verre { 36.0 } else { 20.0 };
+    let (rect, _) = ui.allocate_exact_size(vec2(width.ceil(), height), Sense::hover());
+    let painter = ui.painter();
+    if style == Chrome::Verre {
+        painter.rect(rect, 18.0, theme::alpha(0xffffff, 0.045), Stroke::new(1.0, chrome.card_border), egui::StrokeKind::Inside);
+    }
+    let y = rect.center().y;
+    let mut x = rect.left() + pad;
+    for index in 0..3 {
+        let square = Rect::from_center_size(pos2(x + dot / 2.0, y), vec2(dot, dot));
+        match style {
+            Chrome::Verre => {
+                let [r, g, b, _] = colors[index].to_array();
+                painter.add(egui::Shadow { offset: [0, 0], blur: 8, spread: 0, color: Color32::from_rgba_unmultiplied(r, g, b, 160) }.as_shape(square, 4));
+                painter.circle_filled(square.center(), 4.0, colors[index]);
+            }
+            Chrome::Ardoise => {
+                painter.rect_filled(square, 2.0, colors[index]);
+            }
+            Chrome::Graphite => {
+                painter.rect_filled(square, 0.0, colors[index]);
+            }
+            _ => {
+                painter.circle_filled(square.center(), 3.5, colors[index]);
+            }
+        }
+        x += dot + gap;
+        painter.text(pos2(x, y), Align2::LEFT_CENTER, &texts[index], font.clone(), chrome.text);
+        let hover = Rect::from_min_max(pos2(square.left(), y - 10.0), pos2(x + widths[index], y + 10.0));
+        let _ = ui.interact(hover, ui.scope_id().with(("count", index)), Sense::hover()).on_hover_text(format!("{} {}", shown[index], words[index]));
+        x += widths[index] + spacing;
     }
 }
 
@@ -2784,11 +3414,7 @@ fn submenu_config(chrome: &UiPalette) -> egui::containers::menu::MenuConfig {
 }
 
 fn primary_button<'a>(chrome: &UiPalette, text: &'a str) -> Button<'a> {
-    Button::new(RichText::new(text).color(chrome.on_accent))
-        .fill(chrome.accent)
-        .stroke(Stroke::NONE)
-        .corner_radius(CornerRadius::same(6))
-        .min_size(vec2(96.0, 32.0))
+    crate::folder_view::primary_button(chrome, text)
 }
 
 impl eframe::App for App {
@@ -2796,8 +3422,17 @@ impl eframe::App for App {
         self.root(ui);
     }
 
+    /// Fully transparent: the app paints the whole window itself, as glass or solid, so the
+    /// theme can change while running without recreating the window.
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        [0.0; 4]
+    }
+
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        storage.set_string("theme", self.mode.key().to_owned());
+        storage.set_string("theme", self.theme.key().to_owned());
+        storage.set_string("code_tone", self.code_tone.key().to_owned());
+        storage.set_string("link_style", self.links.key().to_owned());
+        storage.set_string("transparent_window", self.transparent.to_string());
         storage.set_string("wrap_lines", self.wrap_lines.to_string());
         storage.set_string("aligned_lines", self.aligned_lines.to_string());
         storage.set_string("context_only", self.context_only.to_string());
@@ -2878,6 +3513,27 @@ bool doFind(engine::DiffTextLines* pEngine, int side, const AString& strText, bo
 int unchanged = 42;
 "#;
 
+    /// Something for Verre's glass to show, as the mockup's coloured blobs: the harness renders
+    /// on an opaque background, where the compositor's blur would be. The other themes cover it.
+    pub(super) fn paint_wallpaper(ui: &Ui) {
+        let rect = ui.max_rect();
+        let painter = ui.painter();
+        painter.rect_filled(rect, 0.0, Color32::from_rgb(0x14, 0x1a, 0x24));
+        let blobs = [
+            (pos2(rect.left() + 240.0, rect.top() + 150.0), 330.0, Color32::from_rgb(0x2a, 0x6b, 0x73)),
+            (pos2(rect.right() - 220.0, rect.top() + 420.0), 360.0, Color32::from_rgb(0x4b, 0x3a, 0x8c)),
+            (pos2(rect.left() + 790.0, rect.bottom() + 20.0), 380.0, Color32::from_rgb(0x1f, 0x4f, 0x8a)),
+        ];
+        for (center, radius, color) in blobs {
+            // A soft disc: rings fading out, as a blur would leave it.
+            for step in 0..24 {
+                let t = step as f32 / 24.0;
+                let [r, g, b, _] = color.to_array();
+                painter.circle_filled(center, radius * (1.0 - t * 0.85), Color32::from_rgba_unmultiplied(r, g, b, (14.0 * (0.4 + t)) as u8));
+            }
+        }
+    }
+
     pub(super) fn screenshot_dir() -> Option<std::path::PathBuf> {
         std::env::var_os("BIOMERGE_SHOTS").map(std::path::PathBuf::from)
     }
@@ -2910,6 +3566,7 @@ int unchanged = 42;
                         app.install_look(ui.ctx());
                         app.open(ui.ctx(), paths).unwrap();
                     }
+                    paint_wallpaper(ui);
                     app.root(ui);
                 },
                 app,
@@ -2936,17 +3593,220 @@ int unchanged = 42;
         [left, right]
     }
 
-    #[test]
-    fn both_themes_render() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut harness = harness_for(write_fixture(dir.path()));
-        harness.step();
-        for (mode, name) in [(Mode::Dark, "dark.png"), (Mode::Light, "light.png")] {
-            let ctx = harness.ctx.clone();
-            harness.state_mut().set_mode(&ctx, mode);
-            settle(&mut harness);
-            save(&mut harness, name);
+    /// The file of the mockups, before and after: one change of value, a field added, a call
+    /// rewritten, a function removed and two more changes.
+    const FACTURE_LEFT: &str = "use std::fmt;\n\npub const TAX_RATE: f64 = 0.20;\n\n#[derive(Debug, Clone)]\npub struct Line {\n    pub label: String,\n    pub price: f64,\n    pub quantity: u32,\n}\n\npub fn subtotal(lines: &[Line]) -> f64 {\n    lines.iter().map(|l| l.price * l.quantity as f64).sum()\n}\n\n#[deprecated]\npub fn round2(v: f64) -> f64 {\n    (v * 100.0).round() / 100.0\n}\n\npub fn tax(amount: f64) -> f64 {\n    amount * TAX_RATE\n}\n\nimpl fmt::Display for Line {\n    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {\n        // Two decimals, as on the invoice.\n        write!(f, \"{} : {:.2}\", self.label, self.price)\n    }\n}\n";
+    const FACTURE_RIGHT: &str = "use std::fmt;\n\npub const TAX_RATE: f64 = 0.21;\n\n#[derive(Debug, Clone)]\npub struct Line {\n    pub label: String,\n    pub price: f64,\n    pub quantity: u32,\n    pub discount: f64,\n}\n\npub fn subtotal(lines: &[Line]) -> f64 {\n    lines.iter().map(|l| l.price * f64::from(l.quantity)).sum()\n}\n\npub fn tax(amount: f64) -> f64 {\n    (amount * TAX_RATE).max(0.0)\n}\n\nimpl fmt::Display for Line {\n    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {\n        // Two decimals, as on the invoice.\n        write!(f, \"{} : {:.2} €\", self.label, self.price)\n    }\n}\n";
+
+    fn write_facture(dir: &Path) -> [std::path::PathBuf; 2] {
+        let (left, right) = (dir.join("left"), dir.join("right"));
+        std::fs::create_dir_all(&left).unwrap();
+        std::fs::create_dir_all(&right).unwrap();
+        std::fs::write(left.join("facture.rs"), FACTURE_LEFT).unwrap();
+        std::fs::write(right.join("facture.rs"), FACTURE_RIGHT).unwrap();
+        [left.join("facture.rs"), right.join("facture.rs")]
+    }
+
+    fn set_display(harness: &mut Harness<'_, App>, links: LinkStyle, aligned: bool) {
+        let ctx = harness.ctx.clone();
+        harness.state_mut().run(&ctx, Command::SetLinks(links));
+        if harness.state().aligned_lines != aligned {
+            harness.state_mut().run(&ctx, Command::ToggleAligned);
         }
+    }
+
+    #[test]
+    fn every_theme_renders_both_panes_and_folders_in_both_link_styles_and_display_modes() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = write_facture(dir.path());
+        let mut harness = harness_for(paths.clone());
+        harness.step();
+        let ctx = harness.ctx.clone();
+        for kind in ThemeKind::ALL {
+            harness.state_mut().set_theme(&ctx, kind);
+            for links in [LinkStyle::Ribbons, LinkStyle::Lines] {
+                for aligned in [false, true] {
+                    set_display(&mut harness, links, aligned);
+                    settle(&mut harness);
+                    if !aligned {
+                        let style = if links == LinkStyle::Ribbons { "" } else { "-lines" };
+                        save(&mut harness, &format!("theme-{}{style}.png", kind.key()));
+                    }
+                }
+            }
+            set_display(&mut harness, LinkStyle::Ribbons, false);
+        }
+        // Light code under dark glass, dark code on Ardoise's dark interface.
+        for (kind, tone) in [(ThemeKind::Verre, CodeTone::Light), (ThemeKind::Ardoise, CodeTone::Dark)] {
+            harness.state_mut().set_theme(&ctx, kind);
+            harness.state_mut().run(&ctx, Command::SetCodeTone(tone));
+            settle(&mut harness);
+            save(&mut harness, &format!("theme-{}-code-{}.png", kind.key(), tone.key()));
+        }
+        harness.state_mut().run(&ctx, Command::SetCodeTone(CodeTone::Theme));
+
+        // The folders of the two files. The text tab goes: hidden, it would never finish
+        // colouring its code again for each theme.
+        harness.state_mut().run(&ctx, Command::CloseTab);
+        let folders = [paths[0].parent().unwrap().to_owned(), paths[1].parent().unwrap().to_owned()];
+        std::fs::write(folders[0].join("left-only.txt"), "x").unwrap();
+        std::fs::write(folders[1].join("right-only.txt"), "y").unwrap();
+        std::fs::write(folders[0].join("README.md"), "same").unwrap();
+        std::fs::write(folders[1].join("README.md"), "same").unwrap();
+        harness.state_mut().open(&ctx, folders).unwrap();
+        for kind in ThemeKind::ALL {
+            harness.state_mut().set_theme(&ctx, kind);
+            settle(&mut harness);
+            save(&mut harness, &format!("folders-{}.png", kind.key()));
+        }
+    }
+
+    /// The settings a previous run left, as eframe keeps them.
+    #[derive(Default)]
+    struct Stored(std::collections::HashMap<String, String>);
+
+    impl eframe::Storage for Stored {
+        fn get_string(&self, key: &str) -> Option<String> {
+            self.0.get(key).cloned()
+        }
+
+        fn set_string(&mut self, key: &str, value: String) {
+            self.0.insert(key.to_owned(), value);
+        }
+
+        fn remove_string(&mut self, key: &str) {
+            self.0.remove(key);
+        }
+
+        fn flush(&mut self) {}
+    }
+
+    fn app_with(pairs: &[(&str, &str)]) -> App {
+        let stored = Stored(pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect());
+        App::new(&egui::Context::default(), Some(&stored), None)
+    }
+
+    #[test]
+    fn the_old_theme_setting_keeps_its_look_and_a_first_run_gets_verre_with_ribbons() {
+        let fresh = app_with(&[]);
+        assert_eq!(fresh.theme, ThemeKind::Verre);
+        assert_eq!(fresh.links, LinkStyle::Ribbons);
+        assert!(fresh.transparent && fresh.look.translucent);
+        assert_eq!(app_with(&[("theme", "dark")]).theme, ThemeKind::Verre);
+        assert_eq!(app_with(&[("theme", "light")]).theme, ThemeKind::Clair);
+        // What is saved reads back the same.
+        let mut app = app_with(&[("theme", "graphite"), ("code_tone", "light"), ("link_style", "lines"), ("transparent_window", "false")]);
+        assert_eq!((app.theme, app.code_tone, app.links, app.transparent), (ThemeKind::Graphite, CodeTone::Light, LinkStyle::Lines, false));
+        let mut stored = Stored::default();
+        eframe::App::save(&mut app, &mut stored);
+        let again = App::new(&egui::Context::default(), Some(&stored), None);
+        assert_eq!((again.theme, again.code_tone, again.links, again.transparent), (ThemeKind::Graphite, CodeTone::Light, LinkStyle::Lines, false));
+    }
+
+    #[test]
+    fn forcing_the_code_tone_changes_the_code_colours_but_not_the_interface() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut harness = harness_for(write_facture(dir.path()));
+        harness.step();
+        settle(&mut harness);
+        let ctx = harness.ctx.clone();
+        harness.state_mut().set_theme(&ctx, ThemeKind::Ardoise);
+        let paper = harness.state().look;
+        assert!(paper.ui.dark && !paper.doc.dark);
+        assert_eq!(harness.state_mut().text_tab_mut().syntax_theme(), paper.syntax);
+        harness.state_mut().run(&ctx, Command::SetCodeTone(CodeTone::Dark));
+        settle(&mut harness);
+        let slate = harness.state().look;
+        assert!(slate.ui.dark && slate.doc.dark);
+        assert_eq!(slate.ui.window, paper.ui.window);
+        assert_ne!(slate.syntax, paper.syntax);
+        assert_eq!(harness.state_mut().text_tab_mut().syntax_theme(), slate.syntax);
+        // Transparency belongs to Verre alone.
+        harness.state_mut().run(&ctx, Command::ToggleTransparency);
+        assert!(!harness.state().look.translucent);
+        harness.state_mut().set_theme(&ctx, ThemeKind::Verre);
+        assert!(!harness.state().look.translucent, "turned off, it stays off");
+        harness.state_mut().run(&ctx, Command::ToggleTransparency);
+        assert!(harness.state().look.translucent);
+    }
+
+    #[test]
+    fn the_size_buttons_change_the_code_size_in_every_theme() {
+        use egui_kittest::kittest::Queryable;
+        let dir = tempfile::tempdir().unwrap();
+        let mut harness = harness_for(write_facture(dir.path()));
+        harness.step();
+        settle(&mut harness);
+        let ctx = harness.ctx.clone();
+        for kind in ThemeKind::ALL {
+            harness.state_mut().set_theme(&ctx, kind);
+            harness.run_steps(2);
+            let before = harness.state().code_size;
+            let larger = if kind == ThemeKind::Porcelaine { "Agrandir le texte" } else { "Agrandir le texte (Ctrl++)" };
+            let smaller = if kind == ThemeKind::Porcelaine { "Réduire le texte" } else { "Réduire le texte (Ctrl+-)" };
+            harness.get_by_label(larger).click();
+            harness.run_steps(3);
+            assert_eq!(harness.state().code_size, before + 1.0, "{kind:?}");
+            harness.get_by_label(smaller).click();
+            harness.get_by_label(smaller).click();
+            harness.run_steps(3);
+            assert_eq!(harness.state().code_size, before - 1.0, "{kind:?}");
+            harness.get_by_label("Taille du code").click();
+            harness.run_steps(3);
+            assert_eq!(harness.state().code_size, DEFAULT_CODE_SIZE, "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn ctrl_and_the_wheel_size_the_code() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut harness = harness_for(write_facture(dir.path()));
+        harness.step();
+        settle(&mut harness);
+        harness.hover_at(pos2(400.0, 400.0));
+        let wheel = |delta: f32| egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: vec2(0.0, delta),
+            phase: egui::TouchPhase::Move,
+            modifiers: Modifiers::COMMAND,
+            source: egui::MouseWheelSource::Unknown,
+        };
+        let before = harness.state().code_size;
+        harness.event(wheel(1.0));
+        harness.run_steps(2);
+        assert_eq!(harness.state().code_size, before + 1.0);
+        harness.event(wheel(-2.0));
+        harness.run_steps(2);
+        assert_eq!(harness.state().code_size, before - 1.0);
+        assert_eq!(harness.state_mut().text_tab_mut().scroll_position(), 0.0, "Ctrl+wheel does not scroll");
+    }
+
+    #[test]
+    fn arrows_show_for_the_current_block_and_for_the_one_under_the_pointer() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut harness = harness_for(write_facture(dir.path()));
+        harness.step();
+        settle(&mut harness);
+        harness.remove_cursor();
+        harness.run_steps(2);
+        let tab = harness.state_mut().text_tab_mut();
+        assert_eq!(tab.selected_block(), Some(0));
+        assert!(tab.arrow_center(0, Side::Right).is_some());
+        assert!(tab.arrow_center(1, Side::Right).is_none(), "only the current block has arrows");
+        // Under the pointer, another block shows its arrows, and they work. The second block is
+        // a line added on the right.
+        let line = tab.block_start(1, Side::Right);
+        let at = tab.line_center(Side::Right, line).unwrap();
+        harness.hover_at(at);
+        harness.run_steps(2);
+        let center = harness.state_mut().text_tab_mut().arrow_center(1, Side::Right).expect("hovered block shows its arrows");
+        harness.hover_at(center);
+        harness.run_steps(2);
+        harness.drag_at(center);
+        harness.run_steps(1);
+        harness.drop_at(center);
+        settle(&mut harness);
+        assert!(harness.state_mut().text_tab_mut().is_dirty(), "the hovered block's arrow sends it");
     }
 
     #[test]
@@ -3011,7 +3871,7 @@ int unchanged = 42;
         harness.get_by_label("Apparence").hover();
         harness.run_steps(6);
         save(&mut harness, "submenu.png");
-        harness.get_by_label("Thème clair");
+        harness.get_by_label("Clair");
     }
 
     #[test]
@@ -3552,7 +4412,7 @@ int unchanged = 42;
         assert!(!tab.is_dirty());
 
         let ctx = harness.ctx.clone();
-        harness.state_mut().set_mode(&ctx, Mode::Light);
+        harness.state_mut().set_theme(&ctx, ThemeKind::Clair);
         settle(&mut harness);
         save(&mut harness, "find-light.png");
     }
@@ -3684,7 +4544,7 @@ int unchanged = 42;
         assert!(!tab.is_dirty());
 
         let ctx = harness.ctx.clone();
-        harness.state_mut().set_mode(&ctx, Mode::Light);
+        harness.state_mut().set_theme(&ctx, ThemeKind::Clair);
         harness.key_press_modifiers(Modifiers::COMMAND, Key::G);
         harness.run_steps(3);
         save(&mut harness, "go-to-line-light.png");
@@ -3774,7 +4634,7 @@ int unchanged = 42;
         assert!(!tab.line_is_shown(Side::Left, 39) && !tab.line_is_shown(Side::Left, 20));
         assert!(tab.line_is_shown(Side::Right, 0) && tab.line_is_shown(Side::Right, 40));
 
-        harness.state_mut().set_mode(&ctx, Mode::Light);
+        harness.state_mut().set_theme(&ctx, ThemeKind::Clair);
         harness.state_mut().run(&ctx, Command::SetContextLines(3));
         settle(&mut harness);
         save(&mut harness, "context-light.png");
@@ -3993,11 +4853,6 @@ int unchanged = 42;
         }
     }
 
-    /// The central panel: where the folder trees are laid out in a 1440 × 760 harness.
-    fn central_view() -> Rect {
-        Rect::from_min_max(pos2(0.0, BAND_HEIGHT), pos2(1440.0, 760.0 - STATUS_BAR_HEIGHT))
-    }
-
     /// A click with modifiers held, as the window system sends it.
     fn click_with(harness: &mut Harness<'_, App>, pos: egui::Pos2, modifiers: Modifiers, button: egui::PointerButton) {
         harness.event(egui::Event::ModifiersChanged(modifiers));
@@ -4079,7 +4934,7 @@ int unchanged = 42;
         assert!(app.folder_filter_error.as_deref().is_some_and(|e| e.contains("crochet")), "{:?}", app.folder_filter_error);
         assert_eq!(app.scan_options.name_filter.source(), "*.rs *.toml -target/");
         let ctx = harness.ctx.clone();
-        harness.state_mut().set_mode(&ctx, Mode::Light);
+        harness.state_mut().set_theme(&ctx, ThemeKind::Clair);
         harness.run_steps(3);
         save(&mut harness, "folder-filter-error-light.png");
 
@@ -4101,8 +4956,7 @@ int unchanged = 42;
         settle(&mut harness);
 
         // A click, then Ctrl+click adds, and Shift+click takes the rows between.
-        let view = central_view();
-        let row = |harness: &mut Harness<'_, App>, rel: &str| folder_tab(harness).row_center(rel, Side::Left, view).unwrap();
+        let row = |harness: &mut Harness<'_, App>, rel: &str| folder_tab(harness).row_center(rel, Side::Left).unwrap();
         let at = row(&mut harness, "both.txt");
         click_with(&mut harness, at, Modifiers::NONE, egui::PointerButton::Primary);
         assert_eq!(folder_tab(&mut harness).selection(), ["both.txt"]);
@@ -4139,7 +4993,7 @@ int unchanged = 42;
         assert_eq!(plan.totals.overwrites_of_newer, 1, "the right one is newer");
         save(&mut harness, "folder-copy-dialog.png");
         let ctx = harness.ctx.clone();
-        harness.state_mut().set_mode(&ctx, Mode::Light);
+        harness.state_mut().set_theme(&ctx, ThemeKind::Clair);
         harness.run_steps(3);
         save(&mut harness, "folder-copy-dialog-light.png");
 
@@ -4303,7 +5157,7 @@ int unchanged = 42;
         assert_eq!(plan.totals.deletes, 1, "right-only.txt");
         harness.get_by_label("Synchroniser");
         save(&mut harness, "folder-mirror-dialog.png");
-        harness.state_mut().set_mode(&ctx, Mode::Light);
+        harness.state_mut().set_theme(&ctx, ThemeKind::Clair);
         harness.run_steps(3);
         save(&mut harness, "folder-mirror-dialog-light.png");
 
@@ -4391,7 +5245,7 @@ int unchanged = 42;
         assert_eq!(tab.ignored_row_count(), 2);
         assert!(tab.status_items().iter().any(|item| matches!(item, StatusItem::Pill(text) if text == "2 lignes ignorées")));
         save(&mut harness, "ignored-rows.png");
-        harness.state_mut().set_mode(&ctx, Mode::Light);
+        harness.state_mut().set_theme(&ctx, ThemeKind::Clair);
         settle(&mut harness);
         save(&mut harness, "ignored-rows-light.png");
 
@@ -4445,7 +5299,7 @@ int unchanged = 42;
         harness.run_steps(2);
         assert_eq!(harness.state().ignore_rules[1].scope, biomerge_core::ignore_rules::IgnoreScope::WholeLine);
         let ctx = harness.ctx.clone();
-        harness.state_mut().set_mode(&ctx, Mode::Light);
+        harness.state_mut().set_theme(&ctx, ThemeKind::Clair);
         harness.run_steps(3);
         save(&mut harness, "rules-light.png");
 
@@ -4516,7 +5370,7 @@ int unchanged = 42;
         assert_eq!(tab.block_count(), 0);
         tab.save().unwrap();
         assert_eq!(std::fs::read_to_string(&tracked).unwrap(), "un\ndeux\ntrois\n");
-        harness.state_mut().set_mode(&ctx, Mode::Light);
+        harness.state_mut().set_theme(&ctx, ThemeKind::Clair);
         settle(&mut harness);
         save(&mut harness, "head-light.png");
     }
@@ -4661,7 +5515,7 @@ int unchanged = 42;
         assert_eq!(tab.badge_texts(Side::Right), ["JSON invalide"]);
         save(&mut harness, "json-invalid.png");
         let ctx = harness.ctx.clone();
-        harness.state_mut().set_mode(&ctx, Mode::Light);
+        harness.state_mut().set_theme(&ctx, ThemeKind::Clair);
         settle(&mut harness);
         save(&mut harness, "json-invalid-light.png");
 
@@ -4749,7 +5603,7 @@ int unchanged = 42;
         assert!(paths.contains(&"$.build.jobs".to_owned()) && paths.contains(&"$.new".to_owned()), "{paths:?}");
         save(&mut harness, "json-summary.png");
         let ctx2 = harness.ctx.clone();
-        harness.state_mut().set_mode(&ctx2, Mode::Light);
+        harness.state_mut().set_theme(&ctx2, ThemeKind::Clair);
         harness.run_steps(3);
         save(&mut harness, "json-summary-light.png");
         harness.get_by_label("$.build.jobs").click();
@@ -4826,6 +5680,7 @@ int unchanged = 42;
                         app.install_look(ui.ctx());
                         app.open(ui.ctx(), paths).unwrap();
                     }
+                    paint_wallpaper(ui);
                     app.root(ui);
                 },
                 app,
@@ -4846,7 +5701,7 @@ int unchanged = 42;
         assert!(harness.state().status_items_text().contains("Markdown"), "{}", harness.state().status_items_text());
         save(&mut harness, "documents.png");
         let ctx = harness.ctx.clone();
-        harness.state_mut().set_mode(&ctx, Mode::Light);
+        harness.state_mut().set_theme(&ctx, ThemeKind::Clair);
         settle(&mut harness);
         save(&mut harness, "documents-light.png");
 
@@ -4922,12 +5777,12 @@ int unchanged = 42;
         assert!(tab.status_items().iter().any(|item| matches!(item, StatusItem::Pill(text) if text == "2 même texte ou valeur")));
         save(&mut harness, "folder-same-text.png");
         let ctx = harness.ctx.clone();
-        harness.state_mut().set_mode(&ctx, Mode::Light);
+        harness.state_mut().set_theme(&ctx, ThemeKind::Clair);
         harness.run_steps(3);
         save(&mut harness, "folder-same-text-light.png");
 
         // A double click opens the extracted texts.
-        let at = folder_tab(&mut harness).row_center("contrat.docx", Side::Left, central_view()).unwrap();
+        let at = folder_tab(&mut harness).row_center("contrat.docx", Side::Left).unwrap();
         harness.hover_at(at);
         harness.step();
         // A step lasts a quarter of a second: each click goes in one frame to stay a double one.

@@ -10,6 +10,7 @@ mod icons;
 mod instance;
 mod merge_view;
 mod palette;
+mod panes;
 mod rules_editor;
 mod scroll;
 mod sync;
@@ -108,7 +109,10 @@ fn main() -> eframe::Result {
             .with_app_id("biomerge")
             .with_title("BioMerge")
             .with_inner_size([1400.0, 900.0])
-            .with_min_inner_size([640.0, 360.0]),
+            .with_min_inner_size([640.0, 360.0])
+            // An alpha channel from the start, whatever the theme: Verre's glass needs it, the
+            // other themes paint every pixel solid, and the theme can change without a restart.
+            .with_transparent(true),
         ..Default::default()
     };
     // Unresolved until the merge tab this launch opened says otherwise.

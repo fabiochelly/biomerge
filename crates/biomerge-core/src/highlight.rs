@@ -17,11 +17,40 @@ use crate::document::Line;
 const MAX_LINE_BYTES: usize = 16 * 1024;
 const CHUNK_LINES: usize = 512;
 
-/// Code colours follow the document theme, independently of the interface theme.
+/// Code colours follow the code area's palette, independently of the interface: a dark interface
+/// may show light code.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SyntaxTheme {
+    /// The light code of the "Clair" theme.
     Light,
+    /// Tokyo Night.
     Dark,
+    /// Verre: soft pastels for code on tinted glass.
+    Glass,
+    /// Light code on paper, Ardoise et papier and Porcelaine.
+    Paper,
+    /// Dark code for themes whose code is light by default.
+    Slate,
+    /// Graphite: nearly monochrome, keywords brightest.
+    Mono,
+    /// Graphite's light code.
+    MonoLight,
+}
+
+impl SyntaxTheme {
+    pub const ALL: [SyntaxTheme; 7] = [
+        SyntaxTheme::Light,
+        SyntaxTheme::Dark,
+        SyntaxTheme::Glass,
+        SyntaxTheme::Paper,
+        SyntaxTheme::Slate,
+        SyntaxTheme::Mono,
+        SyntaxTheme::MonoLight,
+    ];
+
+    fn index(self) -> usize {
+        Self::ALL.iter().position(|&theme| theme == self).unwrap_or(0)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -77,6 +106,119 @@ const DARK_RULES: &ThemeRules = &[
     ("markup.italic", 0xbb9af7, true),
 ];
 
+/// The colours of one kind of token, as the mockups of the themes name them.
+struct Tokens {
+    foreground: u32,
+    comment: u32,
+    string: u32,
+    number: u32,
+    keyword: u32,
+    function: u32,
+    kind: u32,
+    attribute: u32,
+    punctuation: u32,
+}
+
+/// The scopes of each kind of token: one table for every theme drawn from the mockups.
+fn token_rules(t: &Tokens) -> Vec<(&'static str, u32, bool)> {
+    vec![
+        ("comment, punctuation.definition.comment", t.comment, true),
+        ("string, string punctuation.definition.string", t.string, false),
+        ("constant.numeric, constant.language, constant.character", t.number, false),
+        ("constant.character.escape, constant.other", t.kind, false),
+        ("keyword, storage.modifier, storage.type", t.keyword, false),
+        ("keyword.operator", t.punctuation, false),
+        ("entity.name.function, support.function, variable.function", t.function, false),
+        ("entity.name.type, entity.name.class, entity.name.struct, entity.name.enum, support.type, support.class, storage.type.numeric", t.kind, false),
+        ("entity.name.tag", t.keyword, false),
+        ("entity.other.attribute-name, meta.annotation, meta.attribute", t.attribute, false),
+        ("variable.parameter", t.foreground, false),
+        ("variable.language", t.keyword, false),
+        ("punctuation", t.punctuation, false),
+        ("markup.heading", t.function, false),
+        ("markup.italic", t.keyword, true),
+    ]
+}
+
+/// Verre: the pastels of its mockup, a touch lighter where comments and punctuation must stay
+/// readable on the strongest change backgrounds.
+const GLASS: Tokens = Tokens {
+    foreground: 0xeef1f5,
+    comment: 0xb6bdc9,
+    string: 0xfcd38d,
+    number: 0xfdba74,
+    keyword: 0xc9b0ff,
+    function: 0x8ec2ff,
+    kind: 0x5eead4,
+    attribute: 0xb8c2d0,
+    punctuation: 0xb4bcc8,
+};
+
+/// Paper: the light code of Ardoise et papier and Porcelaine.
+const PAPER: Tokens = Tokens {
+    foreground: 0x1f2328,
+    comment: 0x555d68,
+    string: 0x7a4f00,
+    number: 0x0550ae,
+    keyword: 0x9a1f98,
+    function: 0x2551c2,
+    kind: 0x0b6378,
+    attribute: 0x555d68,
+    punctuation: 0x4f5761,
+};
+
+/// Slate: dark code for the themes whose code is light by default.
+const SLATE: Tokens = Tokens {
+    foreground: 0xe8ebf0,
+    comment: 0xb0b8c4,
+    string: 0xf5cf8a,
+    number: 0xf9b77a,
+    keyword: 0xc8b2ff,
+    function: 0x8cbcff,
+    kind: 0x67e0cd,
+    attribute: 0xa8b2c0,
+    punctuation: 0xb0b8c4,
+};
+
+/// Graphite: white keywords and names, greys for the rest, strings a cold blue.
+const MONO: Tokens = Tokens {
+    foreground: 0xd4d4d8,
+    comment: 0xa8a8ae,
+    string: 0xa9bdd2,
+    number: 0xdcdce0,
+    keyword: 0xffffff,
+    function: 0xffffff,
+    kind: 0xd0d0d4,
+    attribute: 0xa1a1a6,
+    punctuation: 0xa8a8ad,
+};
+
+const MONO_LIGHT: Tokens = Tokens {
+    foreground: 0x27272a,
+    comment: 0x55555b,
+    string: 0x284d73,
+    number: 0x3f3f46,
+    keyword: 0x0c0c0d,
+    function: 0x0c0c0d,
+    kind: 0x3a3a40,
+    attribute: 0x55555b,
+    punctuation: 0x4a4a50,
+};
+
+/// The scope rules and default foreground of a theme.
+fn theme_rules(theme: SyntaxTheme) -> (u32, Vec<(&'static str, u32, bool)>) {
+    let tokens = match theme {
+        SyntaxTheme::Light => return (0x1f2328, LIGHT_RULES.to_vec()),
+        SyntaxTheme::Dark => return (0xc0caf5, DARK_RULES.to_vec()),
+        SyntaxTheme::Glass => &GLASS,
+        SyntaxTheme::Paper => &PAPER,
+        SyntaxTheme::Slate => &SLATE,
+        SyntaxTheme::Mono => &MONO,
+        SyntaxTheme::MonoLight => &MONO_LIGHT,
+    };
+    (tokens.foreground, token_rules(tokens))
+}
+
 fn rgb(value: u32) -> Color {
     Color {
         r: (value >> 16) as u8,
@@ -110,13 +252,10 @@ fn build_theme(name: &str, foreground: u32, rules: &ThemeRules) -> Theme {
 
 /// Every foreground colour of a theme, so the interface can verify its contrast.
 pub fn theme_colors(theme: SyntaxTheme) -> Vec<[u8; 3]> {
-    let rules = match theme {
-        SyntaxTheme::Light => LIGHT_RULES,
-        SyntaxTheme::Dark => DARK_RULES,
-    };
-    rules
-        .iter()
-        .map(|&(_, color, _)| {
+    let (foreground, rules) = theme_rules(theme);
+    std::iter::once(foreground)
+        .chain(rules.iter().map(|&(_, color, _)| color))
+        .map(|color| {
             let color = rgb(color);
             [color.r, color.g, color.b]
         })
@@ -125,16 +264,20 @@ pub fn theme_colors(theme: SyntaxTheme) -> Vec<[u8; 3]> {
 
 struct Assets {
     syntaxes: SyntaxSet,
-    light: Theme,
-    dark: Theme,
+    themes: Vec<Theme>,
 }
 
 fn assets() -> &'static Assets {
     static ASSETS: OnceLock<Assets> = OnceLock::new();
     ASSETS.get_or_init(|| Assets {
         syntaxes: two_face::syntax::extra_newlines(),
-        light: build_theme("BioMerge Light", 0x1f2328, LIGHT_RULES),
-        dark: build_theme("Tokyo Night", 0xc0caf5, DARK_RULES),
+        themes: SyntaxTheme::ALL
+            .iter()
+            .map(|&theme| {
+                let (foreground, rules) = theme_rules(theme);
+                build_theme(&format!("{theme:?}"), foreground, &rules)
+            })
+            .collect(),
     })
 }
 
@@ -213,15 +356,8 @@ pub fn highlight_lines(
     cancel: &AtomicBool,
     mut emit: impl FnMut(usize, Vec<LineStyles>),
 ) {
-    let Assets {
-        syntaxes,
-        light,
-        dark,
-    } = assets();
-    let theme = match theme {
-        SyntaxTheme::Light => light,
-        SyntaxTheme::Dark => dark,
-    };
+    let Assets { syntaxes, themes } = assets();
+    let theme = &themes[theme.index()];
     let Some(syntax) = syntaxes.find_syntax_by_name(syntax_name) else {
         return;
     };
@@ -305,6 +441,16 @@ mod tests {
         let light = run_with(SyntaxTheme::Light, "Rust", text);
         let dark = run_with(SyntaxTheme::Dark, "Rust", text);
         assert_ne!(light[0][0].color, dark[0][0].color);
+    }
+
+    #[test]
+    fn every_theme_colours_keywords_its_own_way() {
+        let text = "fn main() { let s = 1; }\n";
+        let keywords: std::collections::HashSet<_> = SyntaxTheme::ALL
+            .iter()
+            .map(|&theme| run_with(theme, "Rust", text)[0][0].color)
+            .collect();
+        assert_eq!(keywords.len(), SyntaxTheme::ALL.len());
     }
 
     #[test]

@@ -7,6 +7,7 @@ use std::time::Duration;
 use biomerge_core::merge3::{ChunkKind, Resolution, Stop, Version};
 use egui::{Key, Modifiers, pos2, vec2};
 use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable;
 
 use super::visual_tests::{answered, empty_harness, launch, listening_harness, save, settle, type_text, wait_for_tabs};
 use super::*;
@@ -86,6 +87,7 @@ fn harness_for_merge(inputs: MergeInputs) -> Harness<'static, App> {
                     app.install_look(ui.ctx());
                     app.open_merge(ui.ctx(), inputs, None);
                 }
+                super::visual_tests::paint_wallpaper(ui);
                 app.root(ui);
             },
             app,
@@ -134,12 +136,37 @@ fn a_merge_opens_with_one_sided_changes_merged_and_its_conflicts_counted() {
     assert!(status.contains("2 conflits non résolus"), "{status}");
     assert!(status.contains("Fusion auto : 1 de gauche, 2 de droite, 1 des deux"), "{status}");
     assert_eq!(harness.state().tabs[0].title(), "facture.rs (fusion)");
-    for (mode, name) in [(Mode::Dark, "merge-dark.png"), (Mode::Light, "merge-light.png")] {
-        let ctx = harness.ctx.clone();
-        harness.state_mut().set_mode(&ctx, mode);
-        settle(&mut harness);
-        save(&mut harness, name);
+}
+
+#[test]
+fn every_theme_renders_the_merge_in_both_link_styles_and_both_display_modes() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut harness = opened(dir.path());
+    let ctx = harness.ctx.clone();
+    for kind in ThemeKind::ALL {
+        harness.state_mut().set_theme(&ctx, kind);
+        for links in [LinkStyle::Ribbons, LinkStyle::Lines] {
+            harness.state_mut().run(&ctx, Command::SetLinks(links));
+            for aligned in [false, true] {
+                if harness.state().aligned_lines != aligned {
+                    harness.state_mut().run(&ctx, Command::ToggleAligned);
+                }
+                settle(&mut harness);
+                if links == LinkStyle::Ribbons && !aligned {
+                    save(&mut harness, &format!("merge-{}.png", kind.key()));
+                }
+            }
+        }
+        harness.state_mut().run(&ctx, Command::SetLinks(LinkStyle::Ribbons));
     }
+    // The merge view is where the code size matters most: its buttons are in every theme.
+    harness.state_mut().set_theme(&ctx, ThemeKind::Verre);
+    harness.state_mut().run(&ctx, Command::ToggleAligned);
+    settle(&mut harness);
+    let before = harness.state().code_size;
+    harness.get_by_label("Agrandir le texte (Ctrl++)").click();
+    harness.run_steps(3);
+    assert_eq!(harness.state().code_size, before + 1.0);
 }
 
 #[test]

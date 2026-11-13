@@ -22,12 +22,10 @@ use egui::{
 use crate::icons::{self, Icon};
 use crate::scroll::{Position, Scroller};
 use crate::text_view::StatusItem;
-use crate::theme::{DocPalette, Tint, UiPalette, mix};
+use crate::panes;
+use crate::theme::{Chrome, DocPalette, Look, Tint, UiPalette, alpha, mix};
 use crate::widgets::{self, Item, PathAction, PathBar, dialog_frame, menu_frame, menu_width, separator};
 
-const OUTER_MARGIN: f32 = 12.0;
-const HEADER_HEIGHT: f32 = 44.0;
-const CENTER_GAP: f32 = 36.0;
 const SWAP_BUTTON: f32 = 28.0;
 const ROW_HEIGHT: f32 = 28.0;
 const INDENT: f32 = 20.0;
@@ -35,7 +33,6 @@ const SIZE_WIDTH: f32 = 90.0;
 const DATE_WIDTH: f32 = 128.0;
 const CARD_PADDING: f32 = 8.0;
 const MIN_WIDTH_FOR_DATE: f32 = 460.0;
-const CARD_RADIUS: u8 = 10;
 const REFRESH_EVERY: Duration = Duration::from_millis(80);
 const PROGRESS_SIZE: egui::Vec2 = vec2(460.0, 68.0);
 const DIALOG_WIDTH: f32 = 560.0;
@@ -141,6 +138,8 @@ struct Counts {
 }
 
 pub struct FolderTab {
+    /// Where the two trees were painted in the last frame.
+    last_panes: Option<[Rect; 2]>,
     paths: [PathBuf; 2],
     /// Names shown instead of the folders' own (git's temporary folders).
     labels: [Option<String>; 2],
@@ -204,6 +203,7 @@ impl FolderTab {
             differences_only,
             scroll: 0.0,
             scroller: Scroller::default(),
+            last_panes: None,
             selected: Vec::new(),
             anchor: None,
             focus_side: Side::Left,
@@ -428,14 +428,11 @@ impl FolderTab {
 
     /// Screen position of a visible row in a pane, for clicks in tests.
     #[cfg(test)]
-    pub fn row_center(&self, rel: &str, side: Side, view: Rect) -> Option<Pos2> {
+    pub fn row_center(&self, rel: &str, side: Side) -> Option<Pos2> {
         let index = self.entries.iter().position(|e| e.rel == Path::new(rel))? as u32;
         let row = self.visible.iter().position(|&i| i == index)?;
-        let content = view.shrink(OUTER_MARGIN);
-        let pane_width = ((content.width() - CENTER_GAP) / 2.0).max(160.0);
-        let left = content.left() + side.index() as f32 * (pane_width + CENTER_GAP);
-        let top = content.top() + HEADER_HEIGHT + CARD_PADDING;
-        Some(pos2(left + pane_width / 2.0, top + (row as f32 + 0.5) * ROW_HEIGHT - self.scroll as f32))
+        let pane = self.last_panes?[side.index()];
+        Some(pos2(pane.center().x, pane.top() + (row as f32 + 0.5) * ROW_HEIGHT - self.scroll as f32))
     }
 
     /// True while the dialog of an operation must show: planning, confirming or reporting.
@@ -761,7 +758,9 @@ impl FolderTab {
     }
 
     /// Returns what a row asks for: a pair of files to open.
-    pub fn show(&mut self, ui: &mut Ui, chrome: &UiPalette, doc: &DocPalette) -> Option<FolderAction> {
+    pub fn show(&mut self, ui: &mut Ui, look: &Look) -> Option<FolderAction> {
+        let chrome = &look.ui;
+        let doc = &look.doc;
         let ctx = ui.ctx().clone();
         self.poll_operation(&ctx);
         self.poll();
@@ -776,22 +775,11 @@ impl FolderTab {
         let painter = ui.painter_at(available);
         painter.rect_filled(available, 0.0, chrome.background);
 
-        let content = available.shrink(OUTER_MARGIN);
-        let pane_width = ((content.width() - CENTER_GAP) / 2.0).max(160.0);
-        let lefts = [content.left(), content.left() + pane_width + CENTER_GAP];
-        let cards = lefts.map(|x| {
-            Rect::from_min_size(pos2(x, content.top()), vec2(pane_width, content.height()))
-        });
-        for card in cards {
-            painter.add(egui::Shadow {
-                offset: [0, 3],
-                blur: 14,
-                spread: 0,
-                color: Color32::from_black_alpha(46),
-            }.as_shape(card, CARD_RADIUS));
-            painter.rect_filled(card, CARD_RADIUS, doc.canvas);
-        }
-
+        let (laid, _) = panes::layout(available, look, 2, false);
+        let laid = [laid[0], laid[1]];
+        panes::paint_cards(&painter, look, &laid);
+        let cards = laid.map(|pane| pane.card);
+        let pane_width = cards[0].width();
         let mut rescan = false;
         while let Ok((side, path)) = self.picked.1.try_recv() {
             self.inputs[side] = path.display().to_string();
@@ -800,16 +788,17 @@ impl FolderTab {
             rescan = true;
         }
         for side in 0..2 {
-            let header = Rect::from_min_size(cards[side].min, vec2(pane_width, HEADER_HEIGHT));
+            let header = laid[side].header;
             let action = widgets::path_bar(
                 ui,
-                chrome,
+                look,
                 ui.scope_id().with(("header", side)),
                 header,
                 PathBar {
                     path: &self.paths[side],
                     input: &mut self.inputs[side],
                     icon: Icon::Folder,
+                    tint: chrome.hues.blue,
                     dirty: false,
                     label: ["Chemin de gauche", "Chemin de droite"][side],
                     browse_tip: "Choisir un autre dossier",
@@ -835,7 +824,7 @@ impl FolderTab {
             }
         }
         let swap = icons::square(
-            pos2((cards[0].right() + cards[1].left()) / 2.0, content.top() + HEADER_HEIGHT / 2.0),
+            pos2((cards[0].right() + cards[1].left()) / 2.0, laid[0].header.center().y),
             SWAP_BUTTON,
         );
         let swap_id = ui.scope_id().with("swap");
@@ -849,17 +838,14 @@ impl FolderTab {
             self.rescan(&ctx);
         }
 
+        let rows_bottom = panes::row_clip(look, laid[0].code).bottom();
         let view = Rect::from_min_max(
-            pos2(content.left(), content.top() + HEADER_HEIGHT + CARD_PADDING),
-            content.max - vec2(0.0, CARD_PADDING),
+            pos2(cards[0].left(), laid[0].code.top() + CARD_PADDING),
+            pos2(cards[1].right(), rows_bottom - CARD_PADDING.min(laid[0].code.bottom() - rows_bottom).max(0.0)),
         );
-        let panes = lefts.map(|x| Rect::from_min_size(pos2(x, view.top()), vec2(pane_width, view.height())));
-        let border = |painter: &Painter| {
-            for card in cards {
-                widgets::mask_bottom_corners(painter, card, CARD_RADIUS as f32, chrome.background);
-                painter.rect_stroke(card, CARD_RADIUS, Stroke::new(1.0, chrome.border), egui::StrokeKind::Inside);
-            }
-        };
+        let panes = cards.map(|card| Rect::from_x_y_ranges(card.x_range(), view.y_range()));
+        self.last_panes = Some(panes);
+        let border = |painter: &Painter| panes::finish_cards(painter, look, &laid);
         border(&painter);
         if let Some(error) = &self.error {
             painter.text(view.center(), Align2::CENTER_CENTER, error, FontId::proportional(14.0), chrome.error);
@@ -906,7 +892,7 @@ impl FolderTab {
         let mut open = None;
         if let Some(pos) = response.interact_pointer_pos() {
             let row = ((pos.y - view.top()) as f64 + self.scroll) / ROW_HEIGHT as f64;
-            let side = if pos.x < panes[1].left() - CENTER_GAP / 2.0 { Side::Left } else { Side::Right };
+            let side = if pos.x < (panes[0].right() + panes[1].left()) / 2.0 { Side::Left } else { Side::Right };
             let modifiers = ui.input(|i| i.modifiers);
             match self.visible.get(row as usize).copied() {
                 Some(index) if response.secondary_clicked() => {
@@ -1292,11 +1278,18 @@ fn list_frame(chrome: &UiPalette) -> egui::Frame {
         .inner_margin(egui::Margin::symmetric(12, 6))
 }
 
+/// The main button of a dialog: tinted glass in Verre, ink in Porcelaine, the accent elsewhere.
 pub fn primary_button<'a>(chrome: &UiPalette, text: &'a str) -> Button<'a> {
-    Button::new(RichText::new(text).color(chrome.on_accent))
-        .fill(chrome.accent)
-        .stroke(Stroke::NONE)
-        .corner_radius(CornerRadius::same(6))
+    let (fill, stroke, color, radius) = match chrome.chrome {
+        Chrome::Verre => (alpha(0x8b5cf6, 0.6), Stroke::new(1.0, alpha(0xc4b0ff, 0.6)), Color32::WHITE, 16),
+        Chrome::Porcelaine => (chrome.text, Stroke::NONE, Color32::WHITE, 16),
+        Chrome::Graphite => (chrome.text, Stroke::NONE, chrome.background, 6),
+        _ => (chrome.accent, Stroke::NONE, chrome.on_accent, 6),
+    };
+    Button::new(RichText::new(text).color(color))
+        .fill(fill)
+        .stroke(stroke)
+        .corner_radius(CornerRadius::same(radius))
         .min_size(vec2(96.0, 32.0))
 }
 

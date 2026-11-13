@@ -46,6 +46,18 @@ Comparaison de fichiers et de dossiers, et fusion à 3 voies, en Rust pur. L'obj
 - Pour chaque conflit : prendre la gauche, la droite, les deux dans un ordre ou l'autre, ou la base. On peut aussi combiner deux changements voisins, ou éditer à la main.
 - Lecture et écriture des marqueurs de conflit de Git (styles `merge` et `zdiff3`). Un fichier déjà en conflit peut être ouvert directement.
 
+**Apparence**
+- Six thèmes :
+  - **Verre**, par défaut : fenêtre translucide que le compositeur floute, comme Hyprland ;
+  - **Ardoise et papier** : interface sombre, code clair ;
+  - **Porcelaine** : clair, avec un dock flottant ;
+  - **Graphite** : monochrome ;
+  - **Tokyo Night** ;
+  - **Clair**.
+- Le code peut rester clair ou sombre quel que soit le thème.
+- Les blocs sont reliés entre les volets par des lignes fines ou par des rubans qui s'élargissent et se rétrécissent, au choix.
+- La taille du code se règle d'un clic (`A−` / `A+` dans la barre d'état), avec Ctrl+molette ou avec Ctrl+plus et Ctrl+moins.
+
 **Git**
 - `git difftool`, `git mergetool` et « Comparer avec HEAD ».
 - Une seule fenêtre : un nouveau lancement ouvre un onglet dans la fenêtre existante.
