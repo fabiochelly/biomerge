@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=BioMerge
+GenericName=Comparaison et fusion de fichiers
+Comment=Compare deux fichiers ou deux dossiers et fusionne à 3 voies les conflits de Git
+Exec=biomerge %F
+Terminal=false
+Categories=Development;
+StartupWMClass=biomerge
+MimeType=text/plain;inode/directory;application/json;application/vnd.openxmlformats-officedocument.wordprocessingml.document;application/vnd.oasis.opendocument.text;
+Keywords=diff;merge;compare;comparaison;fusion;git;

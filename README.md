@@ -60,7 +60,14 @@ cd biomerge
 cargo build --release
 ```
 
-Le binaire est `target/release/biomerge`. BioMerge est développé et testé sous Linux (Wayland et X11). Le code prévoit Windows et macOS, mais rien n'y a été testé.
+Le binaire est `target/release/biomerge`. Pour l'avoir dans le `PATH`, ce que supposent les exemples de configuration ci-dessous :
+
+```sh
+cargo install --path crates/biomerge-app        # installe ~/.cargo/bin/biomerge
+install -Dm644 packaging/biomerge.desktop ~/.local/share/applications/biomerge.desktop
+```
+
+Le fichier `.desktop` ajoute BioMerge au lanceur d'applications et au menu « Ouvrir avec » du gestionnaire de fichiers. Sélectionner deux fichiers ou deux dossiers les compare. BioMerge est développé et testé sous Linux (Wayland et X11). Le code prévoit Windows et macOS, mais rien n'y a été testé.
 
 La police de code est choisie parmi celles installées (MonoLisa, Cascadia Code, JetBrains Mono…, sinon la police par défaut). On peut la changer dans l'application.
 
@@ -71,9 +78,18 @@ biomerge                       # fenêtre vide
 biomerge gauche.txt droite.txt # deux fichiers
 biomerge dossier1 dossier2     # deux dossiers
 biomerge --merge BASE LOCAL DISTANT RÉSULTAT
+biomerge --head fichier.rs     # version validée (HEAD) face au fichier de travail
+biomerge fichier.rs            # fichier en conflit : fusion à 3 voies ;
+                               # sinon, ouvre « Nouvelle comparaison » prérempli
 ```
 
-`biomerge --help` détaille les options (`-L` pour les noms affichés, `--wait`, `--new-window`).
+`biomerge --help` détaille les options :
+- `-L` pour les noms affichés ;
+- `--wait` pour attendre la fermeture de l'onglet ;
+- `--new-window` pour ouvrir une fenêtre à part ;
+- `-u`, accepté pour la compatibilité avec Subversion.
+
+Si BioMerge est déjà ouvert, chaque appel ouvre un onglet dans la fenêtre existante. Avec `--wait`, la commande ne rend la main qu'à la fermeture de cet onglet. Tout outil qui passe des fichiers temporaires en a besoin, pour qu'ils ne soient pas effacés sous vos yeux.
 
 ### Avec Git
 
@@ -92,6 +108,112 @@ git config --global mergetool.biomerge.trustExitCode true
 ```
 
 Pour `git mergetool`, le code de sortie vaut 0 seulement si le résultat a été enregistré sans conflit non résolu. Sinon Git laisse le fichier en conflit.
+
+La plupart des clients Git graphiques (Sourcetree, Fork, SmartGit, Sublime Merge, GitKraken, lazygit…) appellent `git difftool` et `git mergetool`, ou proposent un outil « personnalisé ». Dans ce dernier cas, les arguments sont :
+- comparaison : `--wait "$LOCAL" "$REMOTE"` ;
+- fusion : `--merge "$BASE" "$LOCAL" "$REMOTE" "$MERGED"`.
+
+### IntelliJ IDEA et les autres IDE JetBrains
+
+Dans *Settings › Tools › Diff & Merge › External Diff Tools*, ajoutez deux outils avec le bouton **+**.
+
+| Groupe | Program path | Argument pattern | Option |
+|---|---|---|---|
+| Diff tool | `biomerge` (chemin complet si besoin) | `--wait %1 %2` | |
+| Merge tool | `biomerge` | `--merge %3 %1 %2 %4` | cocher *Trust process exit code* |
+
+Dans le motif, `%1` est la gauche (locale), `%2` la droite, `%3` la base et `%4` le résultat de la fusion. Avec *Trust process exit code*, l'IDE termine la fusion sans poser de question quand BioMerge a enregistré un résultat sans conflit.
+
+Pour comparer le fichier ouvert avec HEAD, ajoutez un outil dans *Settings › Tools › External Tools* :
+- **Program** : `biomerge`
+- **Arguments** : `--head $FilePath$`
+- **Working directory** : `$ProjectFileDir$`
+
+Un raccourci clavier peut lui être associé dans *Keymap › External Tools*.
+
+### Visual Studio Code
+
+VS Code n'a pas de réglage natif pour un outil de comparaison externe. Il existe deux moyens.
+
+**1. L'extension [Compare Helper](https://github.com/keewek/vscode-compare-helper)** (`keewek.compare-helper`). Elle compare deux fichiers ou deux dossiers sélectionnés dans l'explorateur. Dans `settings.json` :
+
+```json
+"compareHelper.externalTools": [
+  {
+    "name": "BioMerge",
+    "path": "biomerge",
+    "args": ["${FOLDER_ITEM_1}", "${FOLDER_ITEM_2}"],
+    "compares": ["text", "folders"]
+  }
+],
+"compareHelper.defaultExternalTools": { "text": "BioMerge", "folders": "BioMerge" }
+```
+
+**2. Une tâche** pour comparer le fichier ouvert avec HEAD. Dans `.vscode/tasks.json`, ou dans les tâches utilisateur :
+
+```json
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "BioMerge : comparer avec HEAD",
+      "type": "process",
+      "command": "biomerge",
+      "args": ["--head", "${file}"],
+      "presentation": { "reveal": "never" },
+      "problemMatcher": []
+    }
+  ]
+}
+```
+
+`git difftool` et `git mergetool` fonctionnent aussi depuis le terminal intégré, avec la configuration Git ci-dessus.
+
+### Mercurial
+
+Dans `~/.hgrc` :
+
+```ini
+[extensions]
+extdiff =
+
+[extdiff]
+cmd.biomerge = biomerge
+opts.biomerge = --wait
+
+[merge-tools]
+biomerge.executable = biomerge
+biomerge.args = --merge $base $local $other $output
+biomerge.gui = True
+
+[ui]
+merge = biomerge
+```
+
+`hg biomerge` compare alors la copie de travail, et `hg merge` ouvre BioMerge pour les conflits.
+
+### Subversion
+
+Subversion n'accepte pas d'arguments dans ces réglages, d'où deux petits scripts à placer dans le `PATH`.
+
+`biomerge-svn-diff` (Subversion l'appelle avec `-u -L … -L … GAUCHE DROITE`) :
+```sh
+#!/bin/sh
+exec biomerge --wait "$@"
+```
+
+`biomerge-svn-merge` (Subversion l'appelle avec `BASE DISTANT LOCAL RÉSULTAT`) :
+```sh
+#!/bin/sh
+exec biomerge --merge "$1" "$3" "$2" "$4"
+```
+
+Puis dans `~/.subversion/config` :
+```ini
+[helpers]
+diff-cmd = biomerge-svn-diff
+merge-tool-cmd = biomerge-svn-merge
+```
 
 ### Raccourcis
 

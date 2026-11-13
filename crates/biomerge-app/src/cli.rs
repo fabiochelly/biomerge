@@ -8,11 +8,22 @@ use crate::instance::{MergeRequest, Request};
 
 pub const HELP: &str = "\
 Usage : biomerge [OPTIONS] [GAUCHE DROITE]
+        biomerge [OPTIONS] CHEMIN
+        biomerge [OPTIONS] --head FICHIER
         biomerge --merge [OPTIONS] BASE LOCAL DISTANT RÉSULTAT
 
 Compare deux fichiers ou deux dossiers. Sans chemins, ouvre la fenêtre vide.
 Si BioMerge est déjà ouvert, la comparaison s'ouvre dans un nouvel onglet de
 la fenêtre existante.
+
+Avec un seul CHEMIN : un fichier où Git a laissé des marqueurs de conflit
+s'ouvre en fusion à 3 voies, le fichier lui-même recevant le résultat (avec
+--wait, le code de sortie suit alors la règle de --merge) ; sinon, la fenêtre
+« Nouvelle comparaison » s'ouvre avec CHEMIN à gauche, en attendant la droite.
+
+Avec --head, compare la version de FICHIER au dernier commit Git (à gauche,
+en lecture seule) au fichier de travail (à droite), comme le menu « Comparer
+avec HEAD ».
 
 Avec --merge, fusionne à 3 voies : LOCAL à gauche, DISTANT à droite, et au
 centre le résultat, écrit dans RÉSULTAT à l'enregistrement. BASE est
@@ -21,6 +32,7 @@ enregistré sans conflit non résolu.
 
 Options :
   -m, --merge            Fusion à 3 voies des quatre chemins (implique --wait)
+      --head FICHIER     Compare FICHIER à sa version du dernier commit Git
   -L, --label NOM        Nom affiché à la place du fichier ; la première fois
                          pour la gauche, la seconde pour la droite (avec
                          --merge : la base, puis la gauche, puis la droite)
@@ -29,6 +41,8 @@ Options :
       --wait             Attend que l'onglet soit fermé avant de rendre la main
                          (nécessaire pour git difftool)
       --new-window       Ouvre une nouvelle fenêtre même si BioMerge tourne déjà
+  -u                     Sans effet (compatibilité Subversion, qui le passe
+                         à la commande de --diff-cmd)
   -h, --help             Affiche cette aide
   -V, --version          Affiche la version
 
@@ -54,6 +68,14 @@ Avec git, pour les comparaisons :
                             (affichés de type différent), --no-symlinks met des
                             copies comparées octet par octet, que git recopie
                             dans l'arbre de travail si elles sont modifiées
+
+Avec Subversion :
+  svn diff --diff-cmd biomerge
+                            svn appelle biomerge -u -L … -L … GAUCHE DROITE pour
+                            chaque fichier modifié ; -u est sans effet
+  svn diff --diff-cmd biomerge -x --wait
+                            -x remplace le -u : un onglet à la fois, chacun
+                            attendu avant que svn efface ses fichiers temporaires
 ";
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -76,6 +98,7 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Parsed, St
     let mut paths: Vec<PathBuf> = Vec::new();
     let mut short_labels: Vec<String> = Vec::new();
     let mut merge = false;
+    let mut head: Option<PathBuf> = None;
     let mut only_paths = false;
     let mut iter = arguments.into_iter();
     while let Some(argument) = iter.next() {
@@ -87,18 +110,13 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Parsed, St
         };
         // `--label-left=NAME` as well as `--label-left NAME`.
         let (name, inline) = match flag.split_once('=') {
-            Some((name, value)) if name.starts_with("--") => (name, Some(value.to_owned())),
+            Some((name, value)) if name.starts_with("--") => (name, Some(OsString::from(value))),
             _ => (flag, None),
         };
-        let mut value = |what: &str| -> Result<String, String> {
-            match inline.clone() {
-                Some(value) => Ok(value),
-                None => iter
-                    .next()
-                    .map(|v| v.to_string_lossy().into_owned())
-                    .ok_or_else(|| format!("{what} attend un nom")),
-            }
+        let mut value = |missing: String| -> Result<OsString, String> {
+            inline.clone().or_else(|| iter.next()).ok_or(missing)
         };
+        let mut label = |what: &str| value(format!("{what} attend un nom")).map(|v| v.to_string_lossy().into_owned());
         match name {
             "--" => only_paths = true,
             "-h" | "--help" => return Ok(Parsed::Help),
@@ -106,12 +124,18 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Parsed, St
             "--wait" => args.request.wait = true,
             "-m" | "--merge" => merge = true,
             "--new-window" => args.new_window = true,
-            "--label-left" => args.request.labels[0] = Some(value("--label-left")?),
-            "--label-right" => args.request.labels[1] = Some(value("--label-right")?),
+            // Subversion's `--diff-cmd` asks for a unified diff, which means nothing here.
+            "-u" => {}
+            "--label-left" => args.request.labels[0] = Some(label("--label-left")?),
+            "--label-right" => args.request.labels[1] = Some(label("--label-right")?),
             // Which input a label names depends on --merge, which may come after.
-            "-L" | "--label" => short_labels.push(value(name)?),
+            "-L" | "--label" => short_labels.push(label(name)?),
+            "--head" => head = Some(PathBuf::from(value("--head attend un fichier".to_owned())?)),
             other => return Err(format!("option inconnue : {other}")),
         }
+    }
+    if let Some(head) = head {
+        return parse_head(args, head, merge, paths, short_labels).map(Parsed::Run);
     }
     if merge {
         return parse_merge(args, paths, short_labels).map(Parsed::Run);
@@ -122,13 +146,35 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Parsed, St
     for (slot, label) in short_labels.into_iter().enumerate() {
         args.request.labels[slot] = Some(label);
     }
+    if paths.len() == 1 {
+        // A name for each side of a comparison that has only one.
+        if args.request.labels.iter().any(Option::is_some) {
+            return Err("les noms (-L, --label-left, --label-right) demandent deux chemins".to_owned());
+        }
+        args.request.single = paths.pop();
+        return Ok(Parsed::Run(args));
+    }
     args.request.paths = match <[PathBuf; 2]>::try_from(paths) {
         Ok(pair) => Some(pair),
         Err(paths) if paths.is_empty() => None,
-        Err(paths) if paths.len() == 1 => return Err("deux chemins attendus, un seul donné".to_owned()),
-        Err(paths) => return Err(format!("deux chemins attendus, {} donnés", paths.len())),
+        Err(paths) => return Err(format!("un ou deux chemins attendus, {} donnés", paths.len())),
     };
     Ok(Parsed::Run(args))
+}
+
+/// `--head FILE`: the file against its committed version, which names both sides itself.
+fn parse_head(mut args: Args, head: PathBuf, merge: bool, paths: Vec<PathBuf>, labels: Vec<String>) -> Result<Args, String> {
+    if merge {
+        return Err("--head et --merge ne vont pas ensemble".to_owned());
+    }
+    if !paths.is_empty() {
+        return Err("--head compare un seul fichier, sans autre chemin".to_owned());
+    }
+    if !labels.is_empty() || args.request.labels.iter().any(Option::is_some) {
+        return Err("--head nomme lui-même ses deux côtés : pas de -L, --label-left ni --label-right".to_owned());
+    }
+    args.request.head = Some(head);
+    Ok(args)
 }
 
 /// `--merge BASE LOCAL REMOTE MERGED`. A merge tool must not return before the user is done,
@@ -190,8 +236,7 @@ mod tests {
 
     #[test]
     fn mistakes_are_reported_in_french() {
-        assert_eq!(run(&["a"]).unwrap_err(), "deux chemins attendus, un seul donné");
-        assert_eq!(run(&["a", "b", "c"]).unwrap_err(), "deux chemins attendus, 3 donnés");
+        assert_eq!(run(&["a", "b", "c"]).unwrap_err(), "un ou deux chemins attendus, 3 donnés");
         assert_eq!(run(&["--label-left"]).unwrap_err(), "--label-left attend un nom");
         assert_eq!(run(&["--frobnicate", "a", "b"]).unwrap_err(), "option inconnue : --frobnicate");
         assert_eq!(parse([OsString::from("--help")]), Ok(Parsed::Help));
@@ -225,5 +270,58 @@ mod tests {
     fn a_double_dash_lets_paths_start_with_a_dash() {
         let args = run(&["--", "-odd", "b"]).unwrap();
         assert_eq!(args.request.paths, Some([PathBuf::from("-odd"), PathBuf::from("b")]));
+    }
+
+    #[test]
+    fn the_line_subversion_passes_to_its_diff_command_is_understood() {
+        let args = run(&["-u", "-L", "x.c\t(révision 12)", "-L", "x.c\t(copie de travail)", "/repo/.svn/tmp/x.c.tmp", "/repo/x.c"]).unwrap();
+        assert_eq!(labels(&args), [Some("x.c\t(révision 12)"), Some("x.c\t(copie de travail)")]);
+        assert_eq!(args.request.paths, Some([PathBuf::from("/repo/.svn/tmp/x.c.tmp"), PathBuf::from("/repo/x.c")]));
+        assert!(!args.request.wait);
+        // `-x --wait` takes the place of the -u.
+        assert!(run(&["--wait", "-L", "a", "-L", "b", "x", "y"]).unwrap().request.wait);
+        // Only -u: other options of diff stay unknown.
+        assert_eq!(run(&["-w", "x", "y"]).unwrap_err(), "option inconnue : -w");
+        assert_eq!(run(&["-uw", "x", "y"]).unwrap_err(), "option inconnue : -uw");
+    }
+
+    #[test]
+    fn head_takes_one_file_after_a_space_or_an_equals_sign() {
+        let args = run(&["--head", "src/x.rs", "--wait", "--new-window"]).unwrap();
+        assert_eq!(args.request.head, Some(PathBuf::from("src/x.rs")));
+        assert!(args.request.wait && args.new_window);
+        assert_eq!(args.request.paths, None);
+        assert_eq!(args.request.single, None);
+        assert_eq!(run(&["--head=-odd.rs"]).unwrap().request.head, Some(PathBuf::from("-odd.rs")));
+    }
+
+    #[test]
+    fn head_goes_with_neither_a_merge_nor_other_paths_nor_labels() {
+        assert_eq!(run(&["--head"]).unwrap_err(), "--head attend un fichier");
+        assert_eq!(run(&["--head", "a", "--merge", "b", "c", "d", "e"]).unwrap_err(), "--head et --merge ne vont pas ensemble");
+        assert_eq!(run(&["--head", "a", "b"]).unwrap_err(), "--head compare un seul fichier, sans autre chemin");
+        assert_eq!(run(&["b", "--head", "a"]).unwrap_err(), "--head compare un seul fichier, sans autre chemin");
+        assert!(run(&["-L", "x", "--head", "a"]).unwrap_err().starts_with("--head nomme lui-même"));
+        assert!(run(&["--label-right=x", "--head", "a"]).is_err());
+    }
+
+    #[test]
+    fn a_single_path_is_handed_to_the_window_as_it_is() {
+        let args = run(&["notes.txt"]).unwrap();
+        assert_eq!(args.request.single, Some(PathBuf::from("notes.txt")));
+        assert_eq!((args.request.paths, args.request.head, args.request.merge), (None, None, None));
+        assert!(!args.request.wait);
+        let args = run(&["--wait", "--", "-conflit.rs"]).unwrap();
+        assert_eq!(args.request.single, Some(PathBuf::from("-conflit.rs")));
+        assert!(args.request.wait);
+        assert_eq!(run(&["-L", "x", "notes.txt"]).unwrap_err(), "les noms (-L, --label-left, --label-right) demandent deux chemins");
+        assert!(run(&["--merge", "notes.txt"]).is_err(), "a merge still needs its four paths");
+    }
+
+    #[test]
+    fn the_help_documents_every_new_form() {
+        for needle in ["biomerge [OPTIONS] CHEMIN", "--head FICHIER", "compatibilité Subversion", "Avec git, pour les fusions", "Avec git, pour les comparaisons"] {
+            assert!(HELP.contains(needle), "{needle}");
+        }
     }
 }

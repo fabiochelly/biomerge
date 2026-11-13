@@ -8,7 +8,7 @@ use biomerge_core::merge3::{ChunkKind, Resolution, Stop, Version};
 use egui::{Key, Modifiers, pos2, vec2};
 use egui_kittest::Harness;
 
-use super::visual_tests::{empty_harness, save, settle, type_text, wait_for_tabs};
+use super::visual_tests::{answered, empty_harness, launch, listening_harness, save, settle, type_text, wait_for_tabs};
 use super::*;
 
 const BASE: &str = r#"//! Facturation : calcul des montants.
@@ -598,6 +598,44 @@ fn a_merge_launch_hears_whether_the_result_was_saved_resolved() {
     harness.run_steps(2);
     assert_eq!(finished.recv_timeout(Duration::from_secs(5)), Ok(Some(0)));
     assert!(std::fs::read_to_string(second.path().join("facture.rs")).unwrap().contains("amount * TAX_RATE"));
+}
+
+#[test]
+fn a_single_file_in_conflict_opens_as_a_merge_whose_launch_hears_the_code() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("instance.sock");
+    let mut harness = listening_harness(&socket);
+    let conflicted = dir.path().join("facture.rs");
+    std::fs::write(&conflicted, "fn tax() -> f64 {\n<<<<<<< HEAD\n    0.21\n=======\n    TAX_RATE\n>>>>>>> autre\n}\n").unwrap();
+
+    // Closed without saving: still in conflict.
+    let finished = launch(&socket, Request { single: Some(conflicted.clone()), wait: true, ..Request::default() });
+    answered(&mut harness, &finished);
+    wait_for_tabs(&mut harness, 1);
+    assert!(harness.state().open_dialog.is_none(), "a merge, not the comparison dialog");
+    assert_eq!(harness.state().tabs[0].title(), "facture.rs (fusion)");
+    assert_eq!(unresolved(&mut harness), 1);
+    save(&mut harness, "single-conflicted.png");
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(finished.try_recv().is_err(), "the launch waits for the tab");
+    harness.state_mut().close_tab(0);
+    harness.run_steps(2);
+    assert_eq!(finished.recv_timeout(Duration::from_secs(5)), Ok(Some(1)));
+
+    // Resolved and saved: success, and the markers are gone from the file.
+    let finished = launch(&socket, Request { single: Some(conflicted.clone()), wait: true, ..Request::default() });
+    answered(&mut harness, &finished);
+    wait_for_tabs(&mut harness, 1);
+    let ctx = harness.ctx.clone();
+    for conflict in conflicts(&mut harness) {
+        harness.state_mut().merge_tab_mut().resolve(&ctx, conflict, Resolution::Right);
+    }
+    harness.step();
+    ctrl(&mut harness, Key::S);
+    harness.state_mut().request_close(0);
+    harness.run_steps(2);
+    assert_eq!(finished.recv_timeout(Duration::from_secs(5)), Ok(Some(0)));
+    assert_eq!(std::fs::read_to_string(&conflicted).unwrap(), "fn tax() -> f64 {\n    TAX_RATE\n}\n");
 }
 
 fn click_at(harness: &mut Harness<'_, App>, pos: egui::Pos2, button: egui::PointerButton) {

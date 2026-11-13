@@ -16,7 +16,10 @@
 //!
 //! A three-way merge (`git mergetool`) sends `base`, `local`, `remote` and `merged` instead of
 //! `left` and `right`, and may name the first three with `label-base`, `label-local` and
-//! `label-remote`.
+//! `label-remote`. `head /abs/path` asks for the file against its committed version, and
+//! `path /abs/path` for one path alone (a file in conflict is merged, anything else waits in
+//! the comparison dialog for its other side). A window older than these keys reads them as a
+//! request to raise it.
 //!
 //! The window answers `ok` once the tab is open (or `error <message>`), then, for `wait`,
 //! `closed` when the tab goes, followed by an exit code for a merge (`closed 0`: saved without
@@ -55,6 +58,11 @@ pub struct Request {
     pub labels: [Option<String>; 2],
     /// A three-way merge instead of a comparison.
     pub merge: Option<MergeRequest>,
+    /// `--head`: the file against its version of the last commit.
+    pub head: Option<PathBuf>,
+    /// One path alone: a file git left in conflict is merged, anything else is the left side
+    /// of the comparison dialog.
+    pub single: Option<PathBuf>,
     pub wait: bool,
 }
 
@@ -253,6 +261,12 @@ mod unix {
                 }
             }
         }
+        if let Some(head) = &request.head {
+            line("head", head.as_os_str().as_bytes());
+        }
+        if let Some(single) = &request.single {
+            line("path", single.as_os_str().as_bytes());
+        }
         for (key, label) in ["label-left", "label-right"].into_iter().zip(&request.labels) {
             if let Some(label) = label {
                 line(key, label.as_bytes());
@@ -291,8 +305,10 @@ mod unix {
                 b"label-base" => merge_labels[0] = Some(text()),
                 b"label-local" => merge_labels[1] = Some(text()),
                 b"label-remote" => merge_labels[2] = Some(text()),
-                b"left" => left = Some(PathBuf::from(std::ffi::OsString::from_vec(value.clone()))),
-                b"right" => right = Some(PathBuf::from(std::ffi::OsString::from_vec(value.clone()))),
+                b"left" => left = Some(path()),
+                b"right" => right = Some(path()),
+                b"head" => request.head = Some(path()),
+                b"path" => request.single = Some(path()),
                 b"label-left" => request.labels[0] = Some(text()),
                 b"label-right" => request.labels[1] = Some(text()),
                 b"wait" => request.wait = true,
@@ -465,8 +481,8 @@ mod tests {
         let request = Request {
             paths: Some([odd, PathBuf::from("/tmp/x y.rs")]),
             labels: [Some("src/x.rs (base)".to_owned()), None],
-            merge: None,
             wait: true,
+            ..Request::default()
         };
         let bytes = encode(&request);
         let mut lines: Vec<Vec<u8>> = bytes.split(|&b| b == b'\n').map(<[u8]>::to_vec).collect();
@@ -502,6 +518,26 @@ mod tests {
         let mut lines = lines_of(&request);
         lines.retain(|line| !line.starts_with(b"merged "));
         assert_eq!(decode(&lines), None);
+    }
+
+    #[test]
+    fn a_head_request_and_a_single_path_survive_the_trip() {
+        let odd = PathBuf::from(OsString::from_vec(b"/repo/a\\b\nc\xff.txt".to_vec()));
+        let head = Request { head: Some(odd), wait: true, ..Request::default() };
+        assert_eq!(decode(&lines_of(&head)), Some(head.clone()));
+        assert!(lines_of(&head).contains(&b"head /repo/a\\\\b\\nc\xff.txt".to_vec()));
+        let single = Request { single: Some(PathBuf::from("/repo/x y.rs")), ..Request::default() };
+        assert_eq!(decode(&lines_of(&single)), Some(single.clone()));
+        assert!(lines_of(&single).contains(&b"path /repo/x y.rs".to_vec()));
+    }
+
+    #[test]
+    fn the_keys_of_older_launches_still_mean_the_same() {
+        let lines = ["biomerge 1", "left /a", "right /b", "label-left A", "wait"].map(|line| line.as_bytes().to_vec());
+        let request = decode(&lines).unwrap();
+        assert_eq!(request.paths, Some([PathBuf::from("/a"), PathBuf::from("/b")]));
+        assert_eq!(request.labels[0].as_deref(), Some("A"));
+        assert!(request.wait && request.head.is_none() && request.single.is_none());
     }
 
     #[test]

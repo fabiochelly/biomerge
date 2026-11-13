@@ -75,8 +75,11 @@ fn main() -> eframe::Result {
     if let Some(merge) = &mut args.request.merge {
         merge.paths_mut().into_iter().for_each(absolute);
     }
-    // A merge tool tells git whether the file is resolved through its exit code.
-    let merging = args.request.merge.is_some();
+    args.request.head.iter_mut().chain(&mut args.request.single).for_each(absolute);
+    // A merge tool tells git whether the file is resolved through its exit code. So does a
+    // waiting launch with one path, if the window finds the file in conflict and merges it;
+    // whatever else that path opens ends with 0.
+    let merging = args.request.merge.is_some() || (args.request.wait && args.request.single.is_some());
 
     let socket = instance::default_socket_path();
     let mut listener = None;
@@ -116,8 +119,9 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |creation| {
             let mut app = app::App::new(&creation.egui_ctx, creation.storage, Some(args.request));
-            if merging {
-                app.wait_on_first_tab(instance::Waiter::local(own));
+            if merging && !app.wait_on_first_tab(instance::Waiter::local(own.clone())) {
+                // One path that opened the comparison dialog: nothing to resolve.
+                own.store(0, Ordering::Relaxed);
             }
             if let Some(listener) = listener.take() {
                 app.listen(&creation.egui_ctx, listener);

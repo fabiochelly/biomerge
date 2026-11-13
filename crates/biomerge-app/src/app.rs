@@ -204,7 +204,14 @@ struct OpenDialog {
     error: Option<String>,
     /// A single file given, holding conflict markers: a merge is offered for it.
     conflicted: Option<PathBuf>,
+    /// Opened for a launch with one path: the right field takes the keyboard.
+    focus_right: bool,
+    /// That launch, if it waits: it goes with the tab the dialog opens, or is let go.
+    waiter: Option<Waiter>,
 }
+
+/// The committed version of a file read on a worker, with the launch waiting for its tab.
+type HeadJob = (PathBuf, Result<Document, String>, Option<Waiter>);
 
 /// The four files of a three-way merge, as typed: base, local, remote, result.
 #[derive(Default)]
@@ -307,7 +314,7 @@ pub struct App {
     /// Requests of later launches (single instance), and the socket they come through.
     requests: Option<Requests>,
     listener: Option<Listener>,
-    git_jobs: (Sender<(PathBuf, Result<Document, String>)>, Receiver<(PathBuf, Result<Document, String>)>),
+    git_jobs: (Sender<HeadJob>, Receiver<HeadJob>),
     git_pending: usize,
     /// What new JSON tabs normalise, and whether they open compared structurally.
     json_options: JsonOptions,
@@ -383,6 +390,10 @@ impl App {
         if let Some(request) = initial {
             if let Some(merge) = request.merge {
                 app.open_merge(ctx, merge_inputs(merge), None);
+            } else if let Some(path) = request.head {
+                app.compare_with_head(ctx, path, None);
+            } else if let Some(path) = request.single {
+                app.open_single(ctx, path, None);
             } else if let Some(paths) = request.paths {
                 if let Err(error) = app.open_labelled(ctx, paths, request.labels) {
                     app.message = Some(error);
@@ -392,11 +403,32 @@ impl App {
         app
     }
 
-    /// The launch that opened the window waits on its tab (a merge from `git mergetool`).
-    pub fn wait_on_first_tab(&mut self, mut waiter: Waiter) {
+    /// The launch that opened the window waits on its tab (a merge from `git mergetool`, or a
+    /// single file in conflict). False when that tab is not a merge: there is no code to wait
+    /// for.
+    pub fn wait_on_first_tab(&mut self, mut waiter: Waiter) -> bool {
         if let (Some(Tab::Merge(tab)), Some(slot)) = (self.tabs.first(), self.waiters.first_mut()) {
             waiter.set_code(tab.exit_code());
             *slot = Some(waiter);
+            return true;
+        }
+        false
+    }
+
+    /// One path alone: a file git left in conflict is merged in place, anything else is the
+    /// left side of the comparison dialog, which waits for the right one.
+    fn open_single(&mut self, ctx: &egui::Context, path: PathBuf, waiter: Option<Waiter>) {
+        let conflicted = path.is_file() && Document::load(&path).is_ok_and(|doc| has_conflict_markers(&doc.lines));
+        if conflicted {
+            self.open_dialog = None;
+            self.open_merge(ctx, MergeInputs::Conflicted(path), waiter);
+        } else {
+            self.open_dialog = Some(OpenDialog {
+                paths: [path.to_string_lossy().into_owned(), String::new()],
+                focus_right: true,
+                waiter,
+                ..OpenDialog::default()
+            });
         }
     }
 
@@ -548,6 +580,13 @@ impl App {
         if let Some(merge) = incoming.request.merge.clone() {
             let waiter = incoming.accept();
             self.open_merge(ctx, merge_inputs(merge), waiter);
+        } else if let Some(path) = incoming.request.head.clone() {
+            // Git answers later; what goes wrong is told in the window, as for the menu.
+            let waiter = incoming.accept();
+            self.compare_with_head(ctx, path, waiter);
+        } else if let Some(path) = incoming.request.single.clone() {
+            let waiter = incoming.accept();
+            self.open_single(ctx, path, waiter);
         } else if let Some(paths) = incoming.request.paths.clone() {
             match self.open_labelled(ctx, paths, incoming.request.labels.clone()) {
                 Ok(()) => {
@@ -581,14 +620,15 @@ impl App {
             .map(Path::to_path_buf)
     }
 
-    /// Reads the committed version beside the interface; a tab opens when it arrives.
-    fn compare_with_head(&mut self, ctx: &egui::Context, path: PathBuf) {
+    /// Reads the committed version beside the interface; a tab opens when it arrives, and the
+    /// waiting launch, if any, goes with it.
+    fn compare_with_head(&mut self, ctx: &egui::Context, path: PathBuf, waiter: Option<Waiter>) {
         let sender = self.git_jobs.0.clone();
         let ctx = ctx.clone();
         self.git_pending += 1;
         std::thread::spawn(move || {
             let result = git::head_version(&path);
-            let _ = sender.send((path, result));
+            let _ = sender.send((path, result, waiter));
             ctx.request_repaint();
         });
     }
@@ -598,7 +638,7 @@ impl App {
         for incoming in incoming {
             self.handle_incoming(ctx, incoming);
         }
-        while let Ok((path, result)) = self.git_jobs.1.try_recv() {
+        while let Ok((path, result, waiter)) = self.git_jobs.1.try_recv() {
             self.git_pending -= 1;
             match result {
                 Ok(head) => {
@@ -610,7 +650,7 @@ impl App {
                         ..SideSource::default()
                     };
                     let tab = self.text_tab_with(ctx, [path.clone(), path], false, [head_side, SideSource::default()]);
-                    self.push_tab(tab, None);
+                    self.push_tab(tab, waiter);
                     self.message = None;
                 }
                 Err(error) => self.message = Some(error),
@@ -882,7 +922,7 @@ impl App {
             Command::FocusFolderFilter => self.focus_search = true,
             Command::OpenIgnoreRules => self.rules_editor = true,
             Command::CompareWithHead => match self.head_candidate() {
-                Some(path) => self.compare_with_head(ctx, path),
+                Some(path) => self.compare_with_head(ctx, path, None),
                 None => self.message = Some("Aucun fichier à comparer avec HEAD dans cet onglet".to_owned()),
             },
             Command::ScrollLines(lines) => match self.tabs.get_mut(self.active) {
@@ -2196,7 +2236,7 @@ impl App {
                 ui.label(RichText::new(label).color(chrome.text_dim).size(12.0));
                 ui.horizontal(|ui| {
                     let (rect, _) = ui.allocate_exact_size(vec2(414.0, FIELD_HEIGHT), Sense::hover());
-                    widgets::text_field(
+                    let field = widgets::text_field(
                         ui,
                         chrome,
                         ui.scope_id().with(("open", side)),
@@ -2206,6 +2246,9 @@ impl App {
                         chrome.text,
                         label,
                     );
+                    if side == 1 && std::mem::take(&mut dialog.focus_right) {
+                        field.request_focus();
+                    }
                     for (text, folder) in [("Fichier…", false), ("Dossier…", true)] {
                         if ui.add_sized([84.0, FIELD_HEIGHT], Button::new(text)).clicked() {
                             let picker = picker.clone();
@@ -2274,21 +2317,25 @@ impl App {
         if cancel {
             self.open_dialog = None;
         } else if let (true, Some(path)) = (resolve, dialog.conflicted.clone()) {
-            self.open_dialog = None;
-            self.open_merge(ctx, MergeInputs::Conflicted(path), None);
+            let waiter = self.close_open_dialog();
+            self.open_merge(ctx, MergeInputs::Conflicted(path), waiter);
         } else if head {
             let path = dialog.paths.iter().map(|p| p.trim()).find(|p| !p.is_empty()).map(PathBuf::from);
             match path.filter(|path| path.is_file()) {
                 Some(path) => {
-                    self.open_dialog = None;
-                    self.compare_with_head(ctx, path);
+                    let waiter = self.close_open_dialog();
+                    self.compare_with_head(ctx, path, waiter);
                 }
                 None => dialog.error = Some("Indique un fichier pour le comparer avec HEAD".to_owned()),
             }
         } else if submit {
             let paths = dialog.paths.clone().map(|p| PathBuf::from(p.trim()));
             match self.open(ctx, paths) {
-                Ok(()) => self.open_dialog = None,
+                Ok(()) => {
+                    if let (Some(waiter), Some(slot)) = (self.close_open_dialog(), self.waiters.last_mut()) {
+                        *slot = Some(waiter);
+                    }
+                }
                 Err(error) => {
                     if let Some(dialog) = &mut self.open_dialog {
                         dialog.error = Some(error);
@@ -2296,6 +2343,12 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Closes the comparison dialog. A launch that was waiting on it (one path given) waits on
+    /// the tab it opened instead, which the caller hands it to.
+    fn close_open_dialog(&mut self) -> Option<Waiter> {
+        self.open_dialog.take().and_then(|dialog| dialog.waiter)
     }
 
     /// The four files of a merge, in the look of the comparison dialog.
@@ -4919,8 +4972,8 @@ int unchanged = 42;
         let request = Request {
             paths: Some([left, right]),
             labels: [Some("src/Test.cpp (base)".to_owned()), Some("src/Test.cpp".to_owned())],
-            merge: None,
             wait: true,
+            ..Request::default()
         };
         let (done, finished) = channel();
         let client_socket = socket.clone();
@@ -4960,5 +5013,110 @@ int unchanged = 42;
         assert!(harness.state().tabs.is_empty());
         drop(harness);
         assert!(!socket.exists(), "the socket goes with the window");
+    }
+
+    /// A window taking the requests of later launches on `socket`.
+    pub(super) fn listening_harness(socket: &Path) -> Harness<'static, App> {
+        let mut harness = empty_harness();
+        let ctx = harness.ctx.clone();
+        let listener = crate::instance::Listener::bind(socket).unwrap();
+        harness.state_mut().listen(&ctx, listener);
+        harness
+    }
+
+    /// A later launch handing `request` over: the channel hears "ok", then for a waiting launch
+    /// the code its tab closed with.
+    pub(super) fn launch(socket: &Path, request: Request) -> Receiver<Option<i32>> {
+        let client = socket.to_owned();
+        let (done, finished) = channel();
+        std::thread::spawn(move || {
+            let handed = crate::instance::hand_over(&client, &request).expect("the window answers");
+            let _ = done.send(None);
+            let _ = done.send(handed.wait());
+        });
+        finished
+    }
+
+    /// Steps the window until the launch hears that its request was taken.
+    pub(super) fn answered(harness: &mut Harness<'_, App>, finished: &Receiver<Option<i32>>) {
+        for _ in 0..600 {
+            harness.step();
+            if let Ok(heard) = finished.try_recv() {
+                assert_eq!(heard, None, "the launch heard the window take its request");
+                harness.run_steps(3);
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("the window never answered");
+    }
+
+    #[test]
+    fn a_head_launch_opens_the_committed_version_beside_the_working_file_and_waits() {
+        let repo = tempfile::tempdir().unwrap();
+        git::tests::repository(repo.path());
+        let socket = repo.path().join("instance.sock");
+        let mut harness = listening_harness(&socket);
+        let finished = launch(&socket, Request { head: Some(repo.path().join("tracked.txt")), wait: true, ..Request::default() });
+        answered(&mut harness, &finished);
+        wait_for_tabs(&mut harness, 1);
+        let tab = harness.state_mut().text_tab_mut();
+        assert_eq!(tab.title(), "tracked.txt (HEAD), tracked.txt");
+        assert!(tab.is_read_only(Side::Left) && !tab.is_read_only(Side::Right));
+        assert_eq!(tab.line_text(Side::Left, 1), "deux");
+        assert_eq!(tab.line_text(Side::Right, 1), "2");
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(finished.try_recv().is_err(), "the launch waits while the tab is open");
+        harness.state_mut().request_close(0);
+        harness.run_steps(2);
+        assert_eq!(finished.recv_timeout(Duration::from_secs(5)), Ok(Some(0)));
+
+        // A file git does not follow: the window says why, as the menu does, and lets the
+        // launch go.
+        let finished = launch(&socket, Request { head: Some(repo.path().join("new.txt")), wait: true, ..Request::default() });
+        answered(&mut harness, &finished);
+        settle(&mut harness);
+        assert!(harness.state().tabs.is_empty());
+        assert_eq!(harness.state().message.as_deref(), Some("new.txt n'est pas suivi par Git"));
+        assert_eq!(finished.recv_timeout(Duration::from_secs(5)), Ok(Some(0)));
+    }
+
+    #[test]
+    fn a_single_ordinary_file_opens_the_dialog_with_the_right_side_to_fill() {
+        use egui_kittest::kittest::Queryable;
+        let dir = tempfile::tempdir().unwrap();
+        let [left, right] = write_fixture(dir.path());
+        let socket = dir.path().join("instance.sock");
+        let mut harness = listening_harness(&socket);
+        let finished = launch(&socket, Request { single: Some(left.clone()), wait: true, ..Request::default() });
+        answered(&mut harness, &finished);
+        let dialog = harness.state().open_dialog.as_ref().expect("the comparison dialog");
+        assert_eq!(dialog.paths, [left.display().to_string(), String::new()]);
+        assert!(harness.state().tabs.is_empty());
+        assert!(harness.query_all_by_label("Droite").any(|node| node.is_focused()), "the right field takes the keyboard");
+        save(&mut harness, "single-path.png");
+
+        // The right side typed, then Enter: the launch now waits on the tab.
+        type_text(&mut harness, &right.display().to_string());
+        harness.key_press(Key::Enter);
+        harness.run_steps(3);
+        assert!(harness.state().open_dialog.is_none());
+        assert_eq!(harness.state().tabs.len(), 1);
+        assert_eq!(harness.state().tabs[0].title(), "Test1.cpp, Test2.cpp");
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(finished.try_recv().is_err(), "the launch waits while the tab is open");
+        settle(&mut harness);
+        harness.state_mut().request_close(0);
+        harness.run_steps(2);
+        assert_eq!(finished.recv_timeout(Duration::from_secs(5)), Ok(Some(0)));
+
+        // A folder alone is a left side too; cancelling lets its launch go.
+        let finished = launch(&socket, Request { single: Some(dir.path().to_owned()), wait: true, ..Request::default() });
+        answered(&mut harness, &finished);
+        assert_eq!(harness.state().open_dialog.as_ref().unwrap().paths[0], dir.path().display().to_string());
+        harness.key_press(Key::Escape);
+        harness.run_steps(3);
+        assert!(harness.state().open_dialog.is_none());
+        assert_eq!(finished.recv_timeout(Duration::from_secs(5)), Ok(Some(0)));
     }
 }
