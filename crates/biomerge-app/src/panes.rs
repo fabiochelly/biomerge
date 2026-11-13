@@ -166,15 +166,20 @@ pub fn arrow_rect(look: &Look, gap: (f32, f32), from_left: bool, y: f32) -> Rect
     Rect::from_center_size(pos2(x, y), vec2(size, size))
 }
 
-/// An arrow's colours from its block's colour: the same hue made opaque, so the button sits
-/// on the ribbon or the link instead of letting it show through, and a glyph that reads on it.
-pub fn arrow_colours(tint: Color32) -> (Color32, Color32, Color32, Color32) {
+/// An arrow's colours from its block's colour, in the manner of Biodrive's tiles: a solid
+/// button, so the ribbon or link never shows through, only lightly tinted by the block's hue
+/// over the theme's raised surface, with a border and a glyph in that hue. A full-strength
+/// fill shouted, the orange ones most of all.
+pub fn arrow_colours(tint: Color32, surface: Color32, dark: bool) -> (Color32, Color32, Color32, Color32) {
+    use crate::theme::mix;
     let [r, g, b, _] = tint.to_srgba_unmultiplied();
-    let fill = Color32::from_rgb(r, g, b);
-    let hover = crate::theme::mix(fill, Color32::WHITE, 0.18);
-    let border = crate::theme::mix(fill, Color32::WHITE, 0.35);
-    let luma = 0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32;
-    let icon = if luma > 160.0 { Color32::from_rgb(0x14, 0x16, 0x1c) } else { Color32::WHITE };
+    let hue = Color32::from_rgb(r, g, b);
+    let [sr, sg, sb, _] = surface.to_srgba_unmultiplied();
+    let surface = Color32::from_rgb(sr, sg, sb);
+    let fill = mix(surface, hue, if dark { 0.2 } else { 0.12 });
+    let hover = mix(surface, hue, if dark { 0.32 } else { 0.22 });
+    let border = mix(surface, hue, if dark { 0.55 } else { 0.5 });
+    let icon = if dark { mix(hue, Color32::WHITE, 0.3) } else { mix(hue, Color32::BLACK, 0.2) };
     (fill, hover, border, icon)
 }
 
@@ -186,11 +191,11 @@ pub fn arrow_button(ui: &Ui, painter: &Painter, look: &Look, rect: Rect, id: egu
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tip));
     let style = look.ui.arrow;
     let hovered = response.hovered();
-    let (base, lighter, border, icon) = arrow_colours(tint);
+    let (base, lighter, border, icon) = arrow_colours(tint, look.ui.raised, look.ui.dark);
     let fill = if hovered { lighter } else { base };
     if style.glow {
-        let [r, g, b, _] = base.to_array();
-        let opacity = if hovered { 150 } else { 110 };
+        let [r, g, b, _] = tint.to_srgba_unmultiplied();
+        let opacity = if hovered { 90 } else { 50 };
         let halo = Color32::from_rgba_unmultiplied(r, g, b, opacity);
         painter.add(egui::Shadow { offset: [0, 0], blur: 14, spread: 0, color: halo }.as_shape(rect, style.radius as u8));
     } else {
