@@ -292,10 +292,6 @@ pub struct Hues {
 /// The buttons that send a block across, or take a side in a merge.
 #[derive(Clone, Copy, Debug)]
 pub struct ArrowStyle {
-    pub fill: Color32,
-    pub hover: Color32,
-    pub border: Color32,
-    pub icon: Color32,
     /// A coloured halo, as the glowing dots of Biodrive.
     pub glow: bool,
     pub size: f32,
@@ -368,11 +364,7 @@ impl UiPalette {
             green: hex(0x15803d),
             slate: hex(0x64748b),
         };
-        let circle = |fill: Color32, hover: Color32, icon: Color32| ArrowStyle {
-            fill,
-            hover,
-            border: Color32::TRANSPARENT,
-            icon,
+        let circle = || ArrowStyle {
             glow: false,
             size: 26.0,
             radius: 13.0,
@@ -409,10 +401,6 @@ impl UiPalette {
                     lit_text: hex(0xd6c8ff),
                     hues: dark_hues,
                     arrow: ArrowStyle {
-                        fill: alpha(0x8b5cf6, 0.55),
-                        hover: alpha(0x8b5cf6, 0.8),
-                        border: alpha(0xc4b0ff, 0.6),
-                        icon: hex(0xffffff),
                         glow: true,
                         size: 26.0,
                         radius: 13.0,
@@ -446,7 +434,7 @@ impl UiPalette {
                 lit_border: hex(0x2a2340),
                 lit_text: hex(0xc4b5fd),
                 hues: Hues { blue: hex(0x5aa9ff), ..dark_hues },
-                arrow: circle(hex(0x7c3aed), hex(0x8b5cf6), hex(0xffffff)),
+                arrow: circle(),
                 ribbon: RibbonStyle { fill: 0.22, edge: 0.6, current_fill: 0.4 },
             },
             ThemeKind::Porcelaine => Self {
@@ -475,7 +463,7 @@ impl UiPalette {
                 lit_border: hex(0x1c1f24),
                 lit_text: hex(0xffffff),
                 hues: light_hues,
-                arrow: circle(hex(0x1c1f24), hex(0x3a3f47), hex(0xffffff)),
+                arrow: circle(),
                 ribbon: RibbonStyle { fill: 0.14, edge: 0.32, current_fill: 0.26 },
             },
             ThemeKind::Graphite => Self {
@@ -505,10 +493,6 @@ impl UiPalette {
                 lit_text: hex(0xededed),
                 hues: dark_hues,
                 arrow: ArrowStyle {
-                    fill: hex(0x1c1c1e),
-                    hover: hex(0x2a2a2d),
-                    border: hex(0x3b3b3f),
-                    icon: hex(0xededed),
                     glow: false,
                     size: 22.0,
                     radius: 6.0,
@@ -542,10 +526,6 @@ impl UiPalette {
                 lit_text: hex(0x7aa2f7),
                 hues: dark_hues,
                 arrow: ArrowStyle {
-                    fill: hex(0x24283b),
-                    hover: hex(0x2f3550),
-                    border: hex(0x5a6390),
-                    icon: hex(0xc0caf5),
                     glow: false,
                     size: 24.0,
                     radius: 6.0,
@@ -579,10 +559,6 @@ impl UiPalette {
                 lit_text: hex(0x1d5bbf),
                 hues: light_hues,
                 arrow: ArrowStyle {
-                    fill: hex(0xffffff),
-                    hover: hex(0xeef0f5),
-                    border: hex(0x7f8290),
-                    icon: hex(0x23262f),
                     glow: false,
                     size: 24.0,
                     radius: 6.0,

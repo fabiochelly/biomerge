@@ -166,27 +166,42 @@ pub fn arrow_rect(look: &Look, gap: (f32, f32), from_left: bool, y: f32) -> Rect
     Rect::from_center_size(pos2(x, y), vec2(size, size))
 }
 
-/// The button sending a block across, in the theme's style. `mirrored` points it left.
-pub fn arrow_button(ui: &Ui, painter: &Painter, look: &Look, rect: Rect, id: egui::Id, mirrored: bool, tip: &str) -> Response {
+/// An arrow's colours from its block's colour: the same hue made opaque, so the button sits
+/// on the ribbon or the link instead of letting it show through, and a glyph that reads on it.
+pub fn arrow_colours(tint: Color32) -> (Color32, Color32, Color32, Color32) {
+    let [r, g, b, _] = tint.to_srgba_unmultiplied();
+    let fill = Color32::from_rgb(r, g, b);
+    let hover = crate::theme::mix(fill, Color32::WHITE, 0.18);
+    let border = crate::theme::mix(fill, Color32::WHITE, 0.35);
+    let luma = 0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32;
+    let icon = if luma > 160.0 { Color32::from_rgb(0x14, 0x16, 0x1c) } else { Color32::WHITE };
+    (fill, hover, border, icon)
+}
+
+/// The button sending a block across, in the theme's shape and the block's colour. `mirrored`
+/// points it left. Paint it after every ribbon and link, so that it stays on top of them.
+#[allow(clippy::too_many_arguments)]
+pub fn arrow_button(ui: &Ui, painter: &Painter, look: &Look, rect: Rect, id: egui::Id, mirrored: bool, tip: &str, tint: Color32) -> Response {
     let response = ui.interact(rect, id, Sense::click());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tip));
     let style = look.ui.arrow;
     let hovered = response.hovered();
-    let fill = if hovered { style.hover } else { style.fill };
+    let (base, lighter, border, icon) = arrow_colours(tint);
+    let fill = if hovered { lighter } else { base };
     if style.glow {
-        let [r, g, b, _] = style.fill.to_array();
+        let [r, g, b, _] = base.to_array();
         let opacity = if hovered { 150 } else { 110 };
-        let halo = Color32::from_rgba_unmultiplied(r.saturating_add(40), g.saturating_add(20), b, opacity);
+        let halo = Color32::from_rgba_unmultiplied(r, g, b, opacity);
         painter.add(egui::Shadow { offset: [0, 0], blur: 14, spread: 0, color: halo }.as_shape(rect, style.radius as u8));
-    } else if style.radius * 2.0 >= style.size {
-        painter.add(shadow(0, 4, 12, if look.ui.dark { 110 } else { 46 }).as_shape(rect, style.radius as u8));
+    } else {
+        painter.add(shadow(0, 3, 10, if look.ui.dark { 110 } else { 46 }).as_shape(rect, style.radius as u8));
     }
-    painter.rect(rect, style.radius, fill, Stroke::new(1.0, style.border), StrokeKind::Inside);
+    painter.rect(rect, style.radius, fill, Stroke::new(1.0, border), StrokeKind::Inside);
     let glyph = icons::square(rect.center(), (style.size * 0.5).round());
     if mirrored {
-        icons::paint_mirrored(painter, Icon::ArrowRight, glyph, style.icon);
+        icons::paint_mirrored(painter, Icon::ArrowRight, glyph, icon);
     } else {
-        icons::paint(painter, Icon::ArrowRight, glyph, style.icon);
+        icons::paint(painter, Icon::ArrowRight, glyph, icon);
     }
     if hovered {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);

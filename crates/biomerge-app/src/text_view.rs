@@ -3274,6 +3274,7 @@ impl TextTab {
         let pointer = ui.ctx().pointer_hover_pos().filter(|_| ui.rect_contains_pointer(geometry.rows));
         let mut pushed = None;
         let mut arrows = Vec::new();
+        let mut waiting = Vec::new();
         let read_only = [Side::Left, Side::Right].map(|side| self.is_read_only(side));
         for block_index in first..self.diff.blocks.len() {
             if !self.block_kept(block_index) {
@@ -3352,11 +3353,16 @@ impl TextTab {
                 }
                 let tip = if target == Side::Right { "Envoyer ce bloc à droite" } else { "Envoyer ce bloc à gauche" };
                 let id = ui.scope_id().with(("arrow", block_index, side));
-                let response = panes::arrow_button(ui, &clip, look, rect, id, target == Side::Left, tip).on_hover_text(tip);
-                arrows.push((block_index, target, rect));
-                if response.clicked() {
-                    pushed = Some((block_index, target));
-                }
+                let colour = block_tint(block.kind, &look.gap).mark;
+                waiting.push((block_index, target, rect, id, tip, colour));
+            }
+        }
+        // After every ribbon and link, so that no later block's band is painted over an arrow.
+        for (block_index, target, rect, id, tip, colour) in waiting {
+            let response = panes::arrow_button(ui, &clip, look, rect, id, target == Side::Left, tip, colour).on_hover_text(tip);
+            arrows.push((block_index, target, rect));
+            if response.clicked() {
+                pushed = Some((block_index, target));
             }
         }
         self.arrow_rects = arrows;

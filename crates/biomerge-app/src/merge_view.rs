@@ -1826,6 +1826,7 @@ impl MergeTab {
         let cards = geometry.cards;
         let gaps = [(cards[LEFT].right(), cards[CENTRE].left()), (cards[CENTRE].right(), cards[RIGHT].left())];
         let pointer = ui.ctx().pointer_hover_pos().filter(|_| ui.rect_contains_pointer(geometry.rows));
+        let mut waiting = Vec::new();
         for &index in &self.layout.blocks[first..] {
             let chunk = &chunks[index];
             let ranges = versions.map(|version| chunk.range(version));
@@ -1902,17 +1903,11 @@ impl MergeTab {
             // Taking a side is offered where it would change the result.
             if fits(left_rect) && !same(Version::Left) {
                 let id = ui.scope_id().with(("take-left", index));
-                let tip = "Prendre la gauche (Ctrl+→)";
-                if panes::arrow_button(ui, &clip, look, left_rect, id, false, tip).on_hover_text(tip).clicked() {
-                    clicked = Some(ChunkAction::Resolve(index, Resolution::Left));
-                }
+                waiting.push((left_rect, id, false, "Prendre la gauche (Ctrl+→)", mark, ChunkAction::Resolve(index, Resolution::Left)));
             }
             if fits(right_rect) && !same(Version::Right) {
                 let id = ui.scope_id().with(("take-right", index));
-                let tip = "Prendre la droite (Ctrl+←)";
-                if panes::arrow_button(ui, &clip, look, right_rect, id, true, tip).on_hover_text(tip).clicked() {
-                    clicked = Some(ChunkAction::Resolve(index, Resolution::Right));
-                }
+                waiting.push((right_rect, id, true, "Prendre la droite (Ctrl+←)", mark, ChunkAction::Resolve(index, Resolution::Right)));
             }
             if fits(menu_rect) {
                 let id = ui.scope_id().with(("chunk-menu", index));
@@ -1927,6 +1922,12 @@ impl MergeTab {
                         clicked = Some(ChunkAction::Resolve(index, Resolution::Merged));
                     }
                 }
+            }
+        }
+        // After every ribbon and link, so that no later chunk's band is painted over an arrow.
+        for (rect, id, mirrored, tip, colour, action) in waiting {
+            if panes::arrow_button(ui, &clip, look, rect, id, mirrored, tip, colour).on_hover_text(tip).clicked() {
+                clicked = Some(action);
             }
         }
         (clicked, menus)
