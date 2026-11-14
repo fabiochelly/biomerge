@@ -1,0 +1,9 @@
+{
+ "id": "l01_no_tounicode",
+ "group": "font",
+ "generator": "raw_cases.py (hand-written PDF syntax)",
+ "note": "Type0/Identity-H TrueType font (Liberation Sans, fully embedded) with no ToUnicode CMap: codes are glyph ids.",
+ "signal": "Only the embedded font's own cmap table can map glyph ids back to Unicode; a tool that ignores it outputs garbage or nothing.",
+ "checks": [],
+ "furniture": []
+}

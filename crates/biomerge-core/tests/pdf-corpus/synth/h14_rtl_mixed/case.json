@@ -1,0 +1,18 @@
+{
+ "id": "h14_rtl_mixed",
+ "group": "script",
+ "generator": "html_cases.py (Chromium print-to-pdf)",
+ "note": "French sentence with an embedded Arabic phrase, an RTL Arabic paragraph with a number, and an embedded Hebrew phrase.",
+ "signal": "Expected in logical (reading) order, as typed; visual-order output reverses the Arabic/Hebrew letters.",
+ "checks": [
+  {
+   "type": "present",
+   "text": "مرحبا بكم في المكتبة"
+  },
+  {
+   "type": "present",
+   "text": "שלום עולם"
+  }
+ ],
+ "furniture": []
+}

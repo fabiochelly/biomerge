@@ -1,0 +1,5 @@
+{
+ "id": "p4_page_break_moved",
+ "note": "Same text; the right file forces a page break before paragraph 5 (all later pages reflow). No real difference.",
+ "expected_differences": []
+}

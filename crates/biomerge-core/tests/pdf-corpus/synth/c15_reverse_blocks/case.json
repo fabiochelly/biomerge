@@ -1,0 +1,9 @@
+{
+ "id": "c15_reverse_blocks",
+ "group": "coord",
+ "generator": "raw_cases.py (hand-written PDF syntax)",
+ "note": "Four paragraphs drawn in reverse order (last paragraph first in the content stream), lines in order inside each.",
+ "signal": "Vertical position decides the paragraph order.",
+ "checks": [],
+ "furniture": []
+}

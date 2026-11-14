@@ -1,0 +1,1 @@
+{"id": "l14_gs_scan_multipage", "group": "scan", "generator": "gs -sDEVICE=pdfimage8 -r100 of h01", "note": "Three-page document rasterised by Ghostscript into an image-only PDF (8-bit grey, 100 dpi).", "signal": "Expected: empty text and a scanned/needs-OCR signal.", "checks": [], "furniture": [], "expect_scanned": true}

@@ -1,0 +1,20 @@
+{
+ "id": "c12_fake_bold",
+ "group": "coord",
+ "generator": "raw_cases.py (hand-written PDF syntax)",
+ "note": "Fake bold: the title drawn three times with 0.3pt offsets, and the first body line drawn twice (second copy emitted after the paragraph).",
+ "signal": "Same glyphs at (almost) the same position are one glyph: no duplicated text.",
+ "checks": [
+  {
+   "type": "count",
+   "text": "Conditions générales de vente",
+   "n": 1
+  },
+  {
+   "type": "count",
+   "text": "En cas de litige",
+   "n": 1
+  }
+ ],
+ "furniture": []
+}

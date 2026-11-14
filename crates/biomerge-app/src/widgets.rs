@@ -62,6 +62,13 @@ pub fn menu_width(ui: &mut Ui, width: f32) {
     ui.spacing_mut().item_spacing.y = 0.0;
 }
 
+/// A small title over a group of menu items.
+pub fn menu_heading(ui: &mut Ui, palette: &UiPalette, text: &str) {
+    let width = ui.available_width().max(ui.min_size().x);
+    let (rect, _) = ui.allocate_exact_size(vec2(width, 22.0), Sense::hover());
+    ui.painter().text(pos2(rect.left() + 10.0, rect.center().y), Align2::LEFT_CENTER, text, semibold(11.5), palette.text_faint);
+}
+
 pub fn separator(ui: &mut Ui, palette: &UiPalette) {
     let width = ui.available_width().max(ui.min_size().x);
     let (rect, _) = ui.allocate_exact_size(vec2(width, 11.0), Sense::hover());
@@ -176,7 +183,22 @@ pub fn text_field(
     color: Color32,
     label: &str,
 ) -> Response {
-    field(ui, palette, id, rect, text, hint, color, label, FontId::proportional(13.0), false)
+    field(ui, palette, id, rect, text, hint, color, label, FontId::proportional(13.0), false, false)
+}
+
+/// A field whose text is shown as dots, with a red border while `invalid`.
+#[allow(clippy::too_many_arguments)]
+pub fn password_field(
+    ui: &mut Ui,
+    palette: &UiPalette,
+    id: Id,
+    rect: Rect,
+    text: &mut String,
+    hint: &str,
+    label: &str,
+    invalid: bool,
+) -> Response {
+    field(ui, palette, id, rect, text, hint, palette.text, label, FontId::proportional(14.0), invalid, true)
 }
 
 /// A field for code or patterns: monospace, with a red border while `invalid`.
@@ -192,7 +214,7 @@ pub fn code_field(
     label: &str,
     invalid: bool,
 ) -> Response {
-    field(ui, palette, id, rect, text, hint, color, label, FontId::monospace(12.5), invalid)
+    field(ui, palette, id, rect, text, hint, color, label, FontId::monospace(12.5), invalid, false)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -207,6 +229,7 @@ fn field(
     label: &str,
     font: FontId,
     invalid: bool,
+    password: bool,
 ) -> Response {
     let focused = ui.memory(|memory| memory.has_focus(id));
     let hovered = ui.rect_contains_pointer(rect);
@@ -237,6 +260,7 @@ fn field(
     let response = child.add(
         egui::TextEdit::singleline(text)
             .id(id)
+            .password(password)
             .font(font)
             .text_color(color)
             .hint_text(hint)

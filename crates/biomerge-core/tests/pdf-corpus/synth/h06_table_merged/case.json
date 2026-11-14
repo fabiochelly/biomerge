@@ -1,0 +1,9 @@
+{
+ "id": "h06_table_merged",
+ "group": "table",
+ "generator": "html_cases.py (Chromium print-to-pdf)",
+ "note": "Table with rowspan and colspan cells (two-level header, a 2-row 'Sud' cell, a 2-column note).",
+ "signal": "Row-major reading; a rowspanned cell appears once, on its first row.",
+ "checks": [],
+ "furniture": []
+}

@@ -7,7 +7,7 @@ use biomerge_core::Side;
 use biomerge_core::diff::{DiffOptions, Whitespace};
 use biomerge_core::dirscan::{NameFilter, ScanOptions};
 use biomerge_core::document::Document;
-use biomerge_core::extract::{self, ExtractOptions, NotePlacement, Revision};
+use biomerge_core::extract::{self, ExtractOptions, NotePlacement, PdfParagraphs, Revision};
 use biomerge_core::fileops::{DeleteMode, Operation};
 use biomerge_core::ignore_rules::{IgnoreRule, IgnoreRules};
 use biomerge_core::json::{ArrayOrder, JsonOptions, KeyOrder};
@@ -69,6 +69,11 @@ const DOC_NOTES: [(NotePlacement, &str); 3] = [
     (NotePlacement::Inline, "Notes dans le texte"),
     (NotePlacement::End, "Notes à la fin"),
     (NotePlacement::Omit, "Notes ignorées"),
+];
+const PDF_PARAGRAPHS: [(PdfParagraphs, &str); 3] = [
+    (PdfParagraphs::Auto, "Recoller les paragraphes : automatique"),
+    (PdfParagraphs::Never, "Recoller les paragraphes : jamais"),
+    (PdfParagraphs::Always, "Recoller les paragraphes : toujours"),
 ];
 const DOC_TYPOGRAPHY: [(Typography, &str); 3] = [
     (Typography::Default, "Typographie : espaces invisibles ignorés"),
@@ -180,6 +185,8 @@ enum Command {
     ToggleDocComments,
     ToggleDocHeadersFooters,
     SetDocTypography(Typography),
+    SetPdfParagraphs(PdfParagraphs),
+    TogglePdfHeadersFooters,
     /// The dialog naming the four files of a three-way merge.
     NewMerge,
     /// The text tab's file holds conflict markers: resolve them in a merge tab.
@@ -1101,6 +1108,8 @@ impl App {
             Command::SetDocTypography(typography) => {
                 self.change_extract(ctx, |options| options.normalization = typography.rules());
             }
+            Command::SetPdfParagraphs(mode) => self.change_extract(ctx, |options| options.pdf_paragraphs = mode),
+            Command::TogglePdfHeadersFooters => self.change_extract(ctx, |options| options.pdf_headers_footers ^= true),
         }
     }
 
@@ -1432,6 +1441,13 @@ impl App {
             for (level, name) in DOC_TYPOGRAPHY {
                 go(ui, Item::new(name).checked(typography == level), Command::SetDocTypography(level), commands);
             }
+            separator(ui, chrome);
+            widgets::menu_heading(ui, chrome, "PDF");
+            for (mode, name) in PDF_PARAGRAPHS {
+                go(ui, Item::new(name).checked(documents.pdf_paragraphs == mode), Command::SetPdfParagraphs(mode), commands);
+            }
+            let running = Item::new("En-têtes, pieds et numéros de page").checked(documents.pdf_headers_footers);
+            go(ui, running, Command::TogglePdfHeadersFooters, commands);
         });
         let response = Item::new("Apparence").icon(Icon::ColorScale).submenu().show(ui, chrome);
         egui::containers::menu::SubMenu::new().config(submenu_config(chrome)).show(ui, &response, |ui| {
@@ -1591,6 +1607,10 @@ impl App {
         for (level, name) in DOC_TYPOGRAPHY {
             add(true, name, "Documents", "", Some(Icon::FileText), typography == level, Command::SetDocTypography(level));
         }
+        for (mode, name) in PDF_PARAGRAPHS {
+            add(true, &format!("PDF, {}", name.to_lowercase()), "Documents", "", Some(Icon::FileText), documents.pdf_paragraphs == mode, Command::SetPdfParagraphs(mode));
+        }
+        add(true, "PDF, en-têtes, pieds et numéros de page", "Documents", "", Some(Icon::FileText), documents.pdf_headers_footers, Command::TogglePdfHeadersFooters);
         add(true, "À propos de BioMerge", "Aide", "", Some(Icon::Info), false, Command::About);
         add(true, "Quitter", "Fichier", "Ctrl+Q", Some(Icon::Quit), false, Command::Quit);
         for (index, tab) in self.tabs.iter().enumerate() {
@@ -3046,7 +3066,7 @@ impl App {
     #[cfg(test)]
     pub fn is_settled(&self) -> bool {
         self.git_pending == 0 && self.tabs.iter().all(|tab| match tab {
-            Tab::Text(tab) => tab.is_ready() && tab.highlight_finished(),
+            Tab::Text(tab) => (tab.is_ready() || tab.is_stopped()) && tab.highlight_finished(),
             Tab::Folder(tab) => tab.is_finished(),
             Tab::Merge(tab) => tab.is_ready() && tab.highlight_finished(),
         })
@@ -5798,6 +5818,128 @@ int unchanged = 42;
         assert!(tab.is_read_only(Side::Left) && tab.is_read_only(Side::Right));
         assert_eq!(tab.line_text(Side::Right, 0), "Bonjour le monde");
         assert_eq!(tab.block_count(), 0);
+    }
+
+    /// A file of the PDF corpus of the engine's tests.
+    fn corpus_pdf(case: &str) -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../biomerge-core/tests/pdf-corpus").join(case)
+    }
+
+    /// Copies corpus PDFs into `dir` under new names.
+    fn pdfs_in(dir: &Path, files: &[(&str, &str)]) -> Vec<std::path::PathBuf> {
+        files
+            .iter()
+            .map(|(case, name)| {
+                let path = dir.join(name);
+                std::fs::copy(corpus_pdf(case), &path).unwrap();
+                path
+            })
+            .collect()
+    }
+
+    #[test]
+    fn two_pdfs_compare_by_their_text_read_only_with_page_numbers_in_the_gutter() {
+        use egui_kittest::kittest::Queryable;
+        let dir = tempfile::tempdir().unwrap();
+        let paths = pdfs_in(dir.path(), &[("pairs/p1_word_changed/left.pdf", "note.pdf"), ("pairs/p1_word_changed/right.pdf", "note-v2.pdf")]);
+        let mut harness = harness_for([paths[0].clone(), paths[1].clone()]);
+        harness.step();
+        settle(&mut harness);
+        let tab = harness.state_mut().text_tab_mut();
+        assert!(tab.is_read_only(Side::Left) && tab.is_read_only(Side::Right));
+        assert!(tab.wraps(), "a document tab wraps by itself");
+        assert_eq!(tab.badge_texts(Side::Left), ["PDF"]);
+        assert_eq!(tab.block_count(), 1, "one word changed, one paragraph on one line");
+        let tip = tab.badge_tip(Side::Right).unwrap();
+        assert!(tip.contains("en-têtes, pieds de page et numéros de page ignorés"), "{tip}");
+        let labels = tab.page_labels(Side::Left);
+        assert_eq!(labels.first(), Some(&(0, 1)));
+        assert!(labels.len() >= 3 && labels.windows(2).all(|pair| pair[0].1 < pair[1].1), "{labels:?}");
+        assert_eq!(harness.query_all_by_label("PDF").count(), 2);
+        save(&mut harness, "pdf.png");
+        let ctx = harness.ctx.clone();
+        harness.state_mut().set_theme(&ctx, ThemeKind::Clair);
+        harness.state_mut().text_tab_mut().go_to_line(Some(Side::Left), 1);
+        settle(&mut harness);
+        save(&mut harness, "pdf-light.png");
+
+        // Joining paragraphs is an option: never, every line of the PDF is a line.
+        let joined = harness.state_mut().text_tab_mut().line_count(Side::Left);
+        harness.state_mut().run(&ctx, Command::SetPdfParagraphs(PdfParagraphs::Never));
+        settle(&mut harness);
+        assert!(harness.state_mut().text_tab_mut().line_count(Side::Left) > joined);
+        assert_eq!(harness.state().extract_options.pdf_paragraphs, PdfParagraphs::Never);
+    }
+
+    #[test]
+    fn an_encrypted_pdf_asks_for_its_password_in_its_pane_then_opens() {
+        use egui_kittest::kittest::Queryable;
+        let dir = tempfile::tempdir().unwrap();
+        let paths = pdfs_in(dir.path(), &[("synth/r01_encrypted_user/doc.pdf", "protégé.pdf"), ("synth/h01_paragraphs_pages/doc.pdf", "ouvert.pdf")]);
+        let mut harness = harness_for([paths[0].clone(), paths[1].clone()]);
+        harness.step();
+        settle(&mut harness);
+        let tab = harness.state_mut().text_tab_mut();
+        assert_eq!([tab.password_prompt(Side::Left), tab.password_prompt(Side::Right)], [Some(false), None]);
+        harness.get_by_label("Mot de passe du PDF de gauche");
+        harness.get_by_label("Ouvrir");
+        save(&mut harness, "pdf-password.png");
+
+        // A wrong password asks again; the field has the keyboard from the start.
+        type_text(&mut harness, "faux");
+        harness.key_press(Key::Enter);
+        harness.run_steps(2);
+        settle(&mut harness);
+        assert_eq!(harness.state_mut().text_tab_mut().password_prompt(Side::Left), Some(true), "wrong, asked again");
+        type_text(&mut harness, "secret");
+        harness.get_by_label("Ouvrir").click();
+        harness.run_steps(2);
+        settle(&mut harness);
+        let tab = harness.state_mut().text_tab_mut();
+        assert_eq!(tab.password_prompt(Side::Left), None);
+        assert_eq!(tab.badge_texts(Side::Left), ["PDF"]);
+        assert_eq!(tab.block_count(), 0, "the same text once opened");
+
+        // F5 reads it again with the password kept by the tab, without asking.
+        harness.key_press(Key::F5);
+        harness.run_steps(2);
+        settle(&mut harness);
+        let tab = harness.state_mut().text_tab_mut();
+        assert_eq!(tab.password_prompt(Side::Left), None);
+        assert!(tab.line_count(Side::Left) > 0);
+    }
+
+    #[test]
+    fn a_scanned_pdf_says_its_text_is_not_compared() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = pdfs_in(dir.path(), &[("synth/l11_scan_image_only/doc.pdf", "scan.pdf"), ("synth/l14_gs_scan_multipage/doc.pdf", "scan-2.pdf")]);
+        let mut harness = harness_for([paths[0].clone(), paths[1].clone()]);
+        harness.step();
+        settle(&mut harness);
+        let tab = harness.state_mut().text_tab_mut();
+        assert_eq!(tab.badge_texts(Side::Left), ["PDF"]);
+        assert!(tab.badge_tip(Side::Left).unwrap().contains("document scanné : texte non comparé"));
+        assert_eq!(tab.line_count(Side::Right), 0, "no text at all");
+        save(&mut harness, "pdf-scan.png");
+    }
+
+    #[test]
+    fn folders_call_two_pdfs_differing_only_in_bytes_the_same_text() {
+        let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        // Rewritten with object streams: other bytes, same text.
+        pdfs_in(a.path(), &[("synth/h01_paragraphs_pages/doc.pdf", "rapport.pdf"), ("pairs/p1_word_changed/left.pdf", "note.pdf"), ("synth/l11_scan_image_only/doc.pdf", "scan.pdf")]);
+        pdfs_in(b.path(), &[("synth/r04_object_streams/doc.pdf", "rapport.pdf"), ("pairs/p1_word_changed/right.pdf", "note.pdf"), ("synth/l14_gs_scan_multipage/doc.pdf", "scan.pdf")]);
+        let mut harness = harness_for([a.path().to_owned(), b.path().to_owned()]);
+        harness.step();
+        settle(&mut harness);
+        use crate::folder_view::Equivalence;
+        use biomerge_core::dirscan::Status;
+        let tab = folder_tab(&mut harness);
+        assert_eq!(tab.entry_status("rapport.pdf"), Some(Status::Different), "the bytes do differ");
+        assert_eq!(tab.equivalence_of("rapport.pdf"), Some(Equivalence::Text));
+        assert_eq!(tab.equivalence_of("note.pdf"), None);
+        assert_eq!(tab.equivalence_of("scan.pdf"), None, "scans have no text to prove them equal");
+        save(&mut harness, "folder-pdf.png");
     }
 
     // --- Single instance --------------------------------------------------------------------

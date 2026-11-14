@@ -1,0 +1,13 @@
+{
+ "id": "r06_broken_xref",
+ "group": "robust",
+ "generator": "robust_cases.sh (qpdf/head/python)",
+ "note": "Classic xref table whose every offset points to byte 999 (wrong).",
+ "signal": "A tolerant reader rebuilds the xref by scanning objects; text must come out.",
+ "checks": [],
+ "furniture": [
+  "Société Exemple - Rapport interne",
+  "Réf. RI-2026-04",
+  "Page "
+ ]
+}

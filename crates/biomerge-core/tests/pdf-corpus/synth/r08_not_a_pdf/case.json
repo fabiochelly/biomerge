@@ -1,0 +1,14 @@
+{
+ "id": "r08_not_a_pdf",
+ "group": "robust",
+ "generator": "robust_cases.sh (qpdf/head/python)",
+ "note": "20 kB of random bytes named .pdf.",
+ "signal": "Clean error.",
+ "checks": [],
+ "furniture": [
+  "Société Exemple - Rapport interne",
+  "Réf. RI-2026-04",
+  "Page "
+ ],
+ "expect_error": "invalid"
+}

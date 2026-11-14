@@ -1,0 +1,13 @@
+{
+ "id": "r04_object_streams",
+ "group": "robust",
+ "generator": "robust_cases.sh (qpdf/head/python)",
+ "note": "Re-written with object streams and a cross-reference stream (PDF 1.5).",
+ "signal": "Normal modern structure; must work.",
+ "checks": [],
+ "furniture": [
+  "Société Exemple - Rapport interne",
+  "Réf. RI-2026-04",
+  "Page "
+ ]
+}

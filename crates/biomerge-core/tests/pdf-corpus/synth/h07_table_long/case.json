@@ -1,0 +1,10 @@
+{
+ "id": "h07_table_long",
+ "group": "table",
+ "generator": "html_cases.py (Chromium print-to-pdf)",
+ "note": "120-row table over 3+ pages; the header row (thead) is repeated by Chromium at the top of every page.",
+ "signal": "The repeated header row on pages 2+ is furniture (expected once).",
+ "checks": [],
+ "furniture": [],
+ "repeated_line": "Date Libellé Montant"
+}

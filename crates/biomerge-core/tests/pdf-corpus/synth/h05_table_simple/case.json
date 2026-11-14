@@ -1,0 +1,16 @@
+{
+ "id": "h05_table_simple",
+ "group": "table",
+ "generator": "html_cases.py (Chromium print-to-pdf)",
+ "note": "Bordered 4-column table, 6 rows, empty cells in the total row.",
+ "signal": "Each row on one line, cells in column order (cell separator free: |, tab or spaces).",
+ "checks": [
+  {
+   "type": "sep",
+   "a": "Clavier sans fil",
+   "b": "2",
+   "kind": "cell"
+  }
+ ],
+ "furniture": []
+}

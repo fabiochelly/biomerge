@@ -1,0 +1,9 @@
+{
+ "id": "h12_justified",
+ "group": "text",
+ "generator": "html_cases.py (Chromium print-to-pdf)",
+ "note": "Five justified paragraphs in a 9cm measure (wide variable inter-word gaps).",
+ "signal": "Justification gaps are single spaces.",
+ "checks": [],
+ "furniture": []
+}

@@ -1,0 +1,7 @@
+Le comité de direction s'est réuni le mardi matin pour examiner les résultats du trimestre écoulé. Les ventes ont progressé dans toutes les régions, à l'exception du secteur nord où la concurrence est restée très vive.
+Chaque collaborateur recevra avant la fin du mois une note détaillée précisant les nouvelles modalités de remboursement des frais professionnels. Les justificatifs devront être conservés pendant une durée minimale de trois ans.
+La rénovation de la façade commencera au printemps si les conditions météorologiques le permettent. Les riverains seront prévenus par courrier une semaine avant l'installation des échafaudages.
+Le contrat prévoit une période d'essai de deux mois, renouvelable une fois avec l'accord écrit des deux parties. Pendant cette période, chacune peut mettre fin à la relation sans indemnité.
+1. Premier élément de la liste, dont le texte est assez long pour continuer sur la ligne suivante avec un retrait suspendu aligné sur le texte.
+2. Deuxième élément, court.
+Une puce suivie d'un texte qui lui aussi déborde sur une deuxième ligne pour vérifier que la continuation reste dans le même élément.

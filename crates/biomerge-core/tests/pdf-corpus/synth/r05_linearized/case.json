@@ -1,0 +1,13 @@
+{
+ "id": "r05_linearized",
+ "group": "robust",
+ "generator": "robust_cases.sh (qpdf/head/python)",
+ "note": "Linearized (fast web view).",
+ "signal": "Must work.",
+ "checks": [],
+ "furniture": [
+  "Société Exemple - Rapport interne",
+  "Réf. RI-2026-04",
+  "Page "
+ ]
+}

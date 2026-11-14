@@ -1,0 +1,9 @@
+{
+ "id": "l02_broken_tounicode",
+ "group": "font",
+ "generator": "raw_cases.py (hand-written PDF syntax)",
+ "note": "Paragraph 1: ToUnicode maps every ASCII letter to the next letter (a->b): the page shows correct text but the CMap lies. Paragraph 2: ToUnicode omits all vowels.",
+ "signal": "Expected = what the page shows; a tool can only get it by distrusting the CMap and using the embedded font cmap. Most will output shifted text (para 1) and either drop the vowels, emit U+FFFD, or fill them from the font (para 2).",
+ "checks": [],
+ "furniture": []
+}

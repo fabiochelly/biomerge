@@ -1,0 +1,5 @@
+{
+ "id": "p5_header_changed",
+ "note": "Same body; the running header text changes (Version 1 -> Version 2) on every page. No body difference (header = furniture).",
+ "expected_differences": []
+}

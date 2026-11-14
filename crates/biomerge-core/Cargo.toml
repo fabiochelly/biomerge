@@ -9,6 +9,10 @@ encoding_rs = "0.8.44"
 globset = "0.4.21"
 ignore = "0.4.34"
 imara-diff = "0.2.0"
+# PDF text. Pinned: the post-processing and the corpus tolerances are tuned on this version.
+# Default features off: `icc` (colour management) does nothing for text; `legacy-crypto` (MD5,
+# RC4) is kept, old encrypted files need it.
+pdf_oxide = { version = "=0.3.78", default-features = false, features = ["legacy-crypto"] }
 quick-xml = "0.41"
 rayon = "1.12.0"
 regex = "1"
@@ -21,4 +25,6 @@ unicode-width = "0.2"
 zip = { version = "9.1", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [dev-dependencies]
+# Reads the case descriptions of the PDF corpus; already built for pdf_oxide.
+serde_json = "1"
 tempfile = "3"

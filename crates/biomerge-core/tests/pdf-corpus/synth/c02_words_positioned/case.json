@@ -1,0 +1,14 @@
+{
+ "id": "c02_words_positioned",
+ "group": "coord",
+ "generator": "raw_cases.py (hand-written PDF syntax)",
+ "note": "Every word is a separate text object placed with its own Tm; the PDF contains no space character at all.",
+ "signal": "Horizontal gap between words = 0.8 to 1.25 x the font's space width (0.22-0.35 em): each gap must become exactly one space.",
+ "checks": [
+  {
+   "type": "present",
+   "text": "Les riverains seront prévenus par courrier"
+  }
+ ],
+ "furniture": []
+}

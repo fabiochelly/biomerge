@@ -1,0 +1,7 @@
+Guide de l'utilisateur
+1. Installation
+Téléchargez le programme puis lancez l'installateur. Ne débranchez pas l'appareil pendant la mise à jour, même si elle semble bloquée.
+1.1 Configuration requise
+Un ordinateur récent avec au moins huit gigaoctets de mémoire.
+2. Utilisation
+Ouvrez le menu Fichier et choisissez Nouveau projet.

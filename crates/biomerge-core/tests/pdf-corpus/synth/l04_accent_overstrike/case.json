@@ -1,0 +1,14 @@
+{
+ "id": "l04_accent_overstrike",
+ "group": "font",
+ "generator": "raw_cases.py (hand-written PDF syntax)",
+ "note": "Old TeX-style accent: 'e' followed by a spacing acute accent glyph (U+00B4) drawn back over it; the rest of the line uses precomposed WinAnsi accents.",
+ "signal": "Accent glyph overlapping the base letter = combining accent (expected 'café'); tools usually emit 'cafe´' or 'caf´e'.",
+ "checks": [
+  {
+   "type": "present",
+   "text": "café est"
+  }
+ ],
+ "furniture": []
+}

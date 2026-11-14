@@ -1,0 +1,40 @@
+{
+ "id": "c07_baseline_gaps",
+ "group": "coord",
+ "generator": "raw_cases.py (hand-written PDF syntax)",
+ "note": "Label/value rows: label at x=72, value at x=300 on the same baseline (gap 140-200pt); a sentence made of two text objects one space width apart; a tab-stop line.",
+ "signal": "Gap >> space width (here > 3 em) = cell/tab separator (newline, tab, 2+ spaces or |), never a plain space or nothing; gap = 1 space width = a single space. Each row stays on its own line (row order, not column order).",
+ "checks": [
+  {
+   "type": "sep",
+   "a": "client",
+   "b": "Société",
+   "kind": "cell"
+  },
+  {
+   "type": "sep",
+   "a": "commande",
+   "b": "12",
+   "kind": "cell"
+  },
+  {
+   "type": "sep",
+   "a": "total",
+   "b": "1 250",
+   "kind": "cell"
+  },
+  {
+   "type": "sep",
+   "a": "objets",
+   "b": "reste",
+   "kind": "space"
+  },
+  {
+   "type": "sep",
+   "a": "Référence :",
+   "b": "DOSSIER",
+   "kind": "cell"
+  }
+ ],
+ "furniture": []
+}

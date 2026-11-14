@@ -1,0 +1,9 @@
+{
+ "id": "l13_words_reversed",
+ "group": "coord",
+ "generator": "raw_cases.py (hand-written PDF syntax)",
+ "note": "Each word its own text object, words of every line emitted right to left.",
+ "signal": "x position decides word order within a line.",
+ "checks": [],
+ "furniture": []
+}

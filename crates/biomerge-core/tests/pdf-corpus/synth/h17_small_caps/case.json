@@ -1,0 +1,18 @@
+{
+ "id": "h17_small_caps",
+ "group": "text",
+ "generator": "html_cases.py (Chromium print-to-pdf)",
+ "note": "Synthesised small caps (Liberation Serif has no smcp) and CSS uppercase transform.",
+ "signal": "The page shows capitals; Chromium keeps the source casing in the text layer for synthesised small caps and the glyph capitals for text-transform, so expected follows that; a case-insensitive check is also recorded.",
+ "checks": [
+  {
+   "type": "present_ci",
+   "text": "victor hugo est né"
+  },
+  {
+   "type": "present_ci",
+   "text": "les misérables paraît"
+  }
+ ],
+ "furniture": []
+}

@@ -1,0 +1,9 @@
+{
+ "id": "h08_lists_nested",
+ "group": "text",
+ "generator": "html_cases.py (Chromium print-to-pdf)",
+ "note": "Bulleted list nested 3 levels (bullet, circle, numbers), one long item wrapping over two lines, then a numbered list.",
+ "signal": "Each item on one line; bullet glyphs dropped by the scoring normalisation, numbers kept.",
+ "checks": [],
+ "furniture": []
+}

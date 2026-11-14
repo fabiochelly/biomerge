@@ -1,0 +1,9 @@
+{
+ "id": "l12_ocr_invisible_layer",
+ "group": "scan",
+ "generator": "raw_cases.py (hand-written PDF syntax)",
+ "note": "Page image (100 dpi grey raster of a text page) with an invisible text layer (render mode 3) at the same positions, like an OCRed scan.",
+ "signal": "Invisible text is the only text: an extractor must return it (it is what the page shows).",
+ "checks": [],
+ "furniture": []
+}

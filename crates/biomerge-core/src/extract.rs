@@ -1,4 +1,5 @@
-//! Text extraction from word-processing documents (.docx and .odt families), for comparison.
+//! Text extraction from word-processing documents (.docx and .odt families) and PDF, for
+//! comparison.
 //!
 //! The output is meant for the line diff, not for rendering: one paragraph is one line, never
 //! hard-wrapped, so that the word-level diff inside paired lines shows exactly what changed in a
@@ -13,7 +14,8 @@
 //!
 //! Both formats are zip archives of XML parts. Each part is read under a size cap, parsed into a
 //! small tree whose names are rewritten with canonical namespace prefixes (`w:p`, `text:p`),
-//! then walked into format-independent blocks rendered by one common function.
+//! then walked into format-independent blocks rendered by one common function. PDF has no
+//! paragraphs to walk: its lines are rebuilt into paragraphs by [`pdf`].
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -25,6 +27,8 @@ use quick_xml::events::{BytesStart, Event};
 use unicode_normalization::{UnicodeNormalization, is_nfc};
 use zip::ZipArchive;
 use zip::result::ZipError;
+
+mod pdf;
 
 /// A path with this name gives the right grammar to `highlight::detect_syntax`.
 pub const SYNTAX_HINT: &str = "document.md";
@@ -40,6 +44,10 @@ const MAX_DEPTH: usize = 200;
 /// How far an OLE container is searched for the marker of an encrypted package.
 const OLE_PROBE_BYTES: u64 = 8 * 1024 * 1024;
 const OLE_MAGIC: [u8; 8] = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
+/// Readers accept junk before `%PDF-` within the first kilobyte; so does the detection.
+const PDF_HEADER_WINDOW: usize = 1024;
+/// A PDF is read whole into memory: beyond this it is refused rather than read.
+const MAX_PDF_BYTES: u64 = 1024 * 1024 * 1024;
 
 /// Inside paragraph text: a line break (`w:br`, `text:line-break`).
 const BREAK: char = '\n';
@@ -83,6 +91,19 @@ pub enum ExtractError {
         part: String,
         detail: String,
     },
+    #[error("{0}: fichier vide")]
+    Empty(PathBuf),
+    #[error("{0}: ce n'est pas un PDF (en-tête %PDF- absent)")]
+    NotPdf(PathBuf),
+    /// The interface asks for the password and extracts again with it.
+    #[error("{0}: PDF protégé par un mot de passe")]
+    PasswordRequired(PathBuf),
+    #[error("{0}: mot de passe incorrect")]
+    WrongPassword(PathBuf),
+    #[error("{path}: PDF illisible ({detail})")]
+    Pdf { path: PathBuf, detail: String },
+    #[error("{0}: lecture du PDF interrompue, elle prenait trop de temps")]
+    TooSlow(PathBuf),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -91,6 +112,7 @@ pub enum DocFormat {
     Docx,
     /// OpenDocument Text: .odt, .ott, flat .fodt.
     Odt,
+    Pdf,
 }
 
 impl DocFormat {
@@ -98,6 +120,7 @@ impl DocFormat {
         match self {
             DocFormat::Docx => "Word",
             DocFormat::Odt => "OpenDocument",
+            DocFormat::Pdf => "PDF",
         }
     }
 
@@ -111,6 +134,7 @@ impl DocFormat {
         match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
             "docx" | "docm" | "dotx" | "dotm" => Some(DocFormat::Docx),
             "odt" | "ott" | "fodt" => Some(DocFormat::Odt),
+            "pdf" => Some(DocFormat::Pdf),
             _ => None,
         }
     }
@@ -201,6 +225,20 @@ impl Normalization {
     }
 }
 
+/// How the lines of a PDF are put back into paragraphs. A PDF stores lines, not paragraphs:
+/// one word added reflows the paragraph, and compared line by line every following line of the
+/// paragraph would differ.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum PdfParagraphs {
+    /// Only where the lines look like running prose: forms, statements and tables keep their
+    /// lines, which compare better as they are.
+    #[default]
+    Auto,
+    Never,
+    /// Every run of lines up to a blank line, a list item or a table row.
+    Always,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ExtractOptions {
     pub revision: Revision,
@@ -218,6 +256,10 @@ pub struct ExtractOptions {
     /// compared.
     pub keep_empty_paragraphs: bool,
     pub normalization: Normalization,
+    pub pdf_paragraphs: PdfParagraphs,
+    /// Lines repeated at the top or bottom of most pages, and page numbers, kept in place. Off,
+    /// they are dropped: a page break that moves would otherwise move them through the text.
+    pub pdf_headers_footers: bool,
 }
 
 impl Default for ExtractOptions {
@@ -231,6 +273,8 @@ impl Default for ExtractOptions {
             headers_footers: false,
             keep_empty_paragraphs: false,
             normalization: Normalization::default(),
+            pdf_paragraphs: PdfParagraphs::Auto,
+            pdf_headers_footers: false,
         }
     }
 }
@@ -254,6 +298,19 @@ pub struct DocFacts {
     /// At least one header or footer has text.
     pub has_headers_footers: bool,
     pub has_macros: bool,
+    /// PDF: pages in the file.
+    pub pages: usize,
+    /// PDF: pages with no text at all, scanned ones included.
+    pub pages_without_text: usize,
+    /// PDF: pages without text that are images, most likely scans (no OCR is done).
+    pub scanned_pages: usize,
+    /// PDF: pages whose text is not words (fonts without a character map, damaged files),
+    /// shown as one placeholder line each.
+    pub illegible_pages: usize,
+    /// PDF: pages that failed to read, or were left unread past the time or page budget.
+    pub unread_pages: usize,
+    /// PDF: running header and footer lines and page numbers dropped.
+    pub headers_footers_removed: usize,
 }
 
 impl DocFacts {
@@ -308,6 +365,38 @@ impl DocFacts {
         if self.has_macros {
             notices.push("macros non comparées".to_owned());
         }
+        if self.pages > 0 && self.scanned_pages == self.pages {
+            notices.push("document scanné : texte non comparé".to_owned());
+        } else {
+            if self.scanned_pages > 0 {
+                notices.push(count(
+                    self.scanned_pages,
+                    "page scannée : texte non comparé",
+                    "pages scannées : texte non comparé",
+                ));
+            }
+            let blank = self.pages_without_text - self.scanned_pages;
+            if blank > 0 {
+                notices.push(count(blank, "page sans texte", "pages sans texte"));
+            }
+        }
+        if self.illegible_pages > 0 {
+            notices.push(count(
+                self.illegible_pages,
+                "page illisible (police sans correspondance de caractères)",
+                "pages illisibles (police sans correspondance de caractères)",
+            ));
+        }
+        if self.unread_pages > 0 {
+            notices.push(count(
+                self.unread_pages,
+                "page non lue (endommagée, ou limite de temps atteinte)",
+                "pages non lues (endommagées, ou limite de temps atteinte)",
+            ));
+        }
+        if self.headers_footers_removed > 0 {
+            notices.push("en-têtes, pieds de page et numéros de page ignorés".to_owned());
+        }
         notices
     }
 }
@@ -318,6 +407,18 @@ pub struct Extracted {
     /// Lines ended by `\n`, one per paragraph, table row or note.
     pub text: String,
     pub facts: DocFacts,
+    /// PDF: where each page begins in `text`, for a discreet page number beside the line rather
+    /// than a marker inside the text (a page break that moves must not make a difference).
+    pub page_starts: Vec<PageStart>,
+}
+
+/// The first line of `text` that starts on a page. A page whose text only continues the
+/// paragraph of the page before has none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PageStart {
+    pub line: u32,
+    /// From 1, as printed.
+    pub page: u32,
 }
 
 /// Cheap test by file name, for the interface and for folder comparison.
@@ -328,11 +429,21 @@ pub fn is_supported(path: &Path) -> bool {
 /// Extracts the text of a document. The format is recognised from the content, whatever the
 /// extension.
 pub fn extract(path: &Path, options: &ExtractOptions) -> Result<Extracted, ExtractError> {
+    extract_with_password(path, options, None)
+}
+
+/// [`extract`] with the password of an encrypted PDF, after [`ExtractError::PasswordRequired`].
+/// Other formats ignore it. The password is only handed to the PDF reader, never kept.
+pub fn extract_with_password(
+    path: &Path,
+    options: &ExtractOptions,
+    password: Option<&str>,
+) -> Result<Extracted, ExtractError> {
     let file = File::open(path).map_err(|source| ExtractError::Io {
         path: path.to_owned(),
         source,
     })?;
-    extract_from(BufReader::new(file), path, options)
+    extract_from(BufReader::new(file), path, options, password)
 }
 
 /// Same as [`extract`] for a document already in memory; `path` only names it in errors.
@@ -341,7 +452,7 @@ pub fn extract_bytes(
     path: &Path,
     options: &ExtractOptions,
 ) -> Result<Extracted, ExtractError> {
-    extract_from(Cursor::new(bytes), path, options)
+    extract_from(Cursor::new(bytes), path, options, None)
 }
 
 /// The extracted text alone.
@@ -349,13 +460,16 @@ pub fn extract_text(path: &Path, options: &ExtractOptions) -> Result<String, Ext
     extract(path, options).map(|extracted| extracted.text)
 }
 
-/// Whether two documents have the same text, however different their bytes are.
+/// Whether two documents have the same text, however different their bytes are. Scanned PDF
+/// pages have no text to compare: such documents are never called the same.
 pub fn same_text(
     left: &Path,
     right: &Path,
     options: &ExtractOptions,
 ) -> Result<bool, ExtractError> {
-    Ok(extract_text(left, options)? == extract_text(right, options)?)
+    let (left, right) = (extract(left, options)?, extract(right, options)?);
+    let unproven = |doc: &Extracted| doc.facts.scanned_pages + doc.facts.unread_pages > 0;
+    Ok(!unproven(&left) && !unproven(&right) && left.text == right.text)
 }
 
 /// A 64-bit hash of the extracted text, stable across runs: a cache key for folder comparison.
@@ -803,20 +917,39 @@ fn extract_from<R: Read + Seek>(
     mut reader: R,
     path: &Path,
     options: &ExtractOptions,
+    password: Option<&str>,
 ) -> Result<Extracted, ExtractError> {
     let io = |source| ExtractError::Io {
         path: path.to_owned(),
         source,
     };
     let mut head = Vec::new();
-    (&mut reader).take(8).read_to_end(&mut head).map_err(io)?;
+    (&mut reader).take(PDF_HEADER_WINDOW as u64).read_to_end(&mut head).map_err(io)?;
     reader.seek(SeekFrom::Start(0)).map_err(io)?;
 
+    let named_pdf = DocFormat::from_extension(path) == Some(DocFormat::Pdf);
+    // Junk before the header is allowed, but a zip or OLE container holding a PDF is not one.
+    let container = head.starts_with(b"PK") || head.starts_with(&OLE_MAGIC);
+    if !container && head.windows(5).any(|window| window == b"%PDF-") {
+        let mut bytes = Vec::new();
+        reader.take(MAX_PDF_BYTES + 1).read_to_end(&mut bytes).map_err(io)?;
+        if bytes.len() as u64 > MAX_PDF_BYTES {
+            return Err(too_large(path, "PDF", MAX_PDF_BYTES));
+        }
+        return pdf::extract_pdf(bytes, path, options, password);
+    }
+    if named_pdf {
+        return Err(if head.is_empty() {
+            ExtractError::Empty(path.to_owned())
+        } else {
+            ExtractError::NotPdf(path.to_owned())
+        });
+    }
     if head.starts_with(b"PK") {
         let zip = ZipArchive::new(reader).map_err(|_| ExtractError::NotZip(path.to_owned()))?;
         return extract_package(Package { zip, path }, options);
     }
-    if head == OLE_MAGIC {
+    if head.starts_with(&OLE_MAGIC) {
         // Word encrypts a .docx by wrapping it in an OLE container, the format of old .doc
         // files: the stream name tells them apart.
         let mut bytes = Vec::new();
@@ -1161,6 +1294,7 @@ impl Collected {
             format,
             text: output.finish(),
             facts: self.facts,
+            page_starts: Vec::new(),
         }
     }
 }
@@ -2726,6 +2860,25 @@ mod tests {
         assert_eq!(extract_text(&other, &options).unwrap(), "Bonjour\n");
         assert_eq!(text_hash(&misnamed, &options).unwrap(), hash_text("Bonjour\n"));
         assert_ne!(hash_text("Bonjour\n"), hash_text("Bonsoir\n"));
+    }
+
+    #[test]
+    fn a_pdf_is_recognised_by_its_name_and_by_its_content() {
+        assert!(is_supported(Path::new("relevé.PDF")));
+        assert_eq!(DocFormat::from_extension(Path::new("a.pdf")), Some(DocFormat::Pdf));
+        let pdf = std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/pdf-corpus/synth/h01_paragraphs_pages/doc.pdf")).unwrap();
+        // Misnamed: the content decides.
+        let extracted = extract_bytes(&pdf, Path::new("rapport.docx"), &ExtractOptions::default()).unwrap();
+        assert_eq!(extracted.format, DocFormat::Pdf);
+        assert_eq!(extracted.format.label(), "PDF");
+        assert!(extracted.text.starts_with("Rapport interne sur l'activité\n"));
+        // Junk before the header, as readers allow within the first kilobyte.
+        let mut prefixed = b"\n\n% junk\n".to_vec();
+        prefixed.extend_from_slice(&pdf);
+        assert_eq!(extract_bytes(&prefixed, Path::new("x.pdf"), &ExtractOptions::default()).unwrap().text, extracted.text);
+        let named = |bytes: &[u8]| extract_bytes(bytes, Path::new("x.pdf"), &ExtractOptions::default()).unwrap_err();
+        assert!(matches!(named(b"PK\x03\x04 not a pdf"), ExtractError::NotPdf(_)));
+        assert!(matches!(named(b""), ExtractError::Empty(_)));
     }
 
     #[test]

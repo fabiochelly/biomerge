@@ -1,0 +1,5 @@
+{
+ "id": "p6_same_visual_other_code",
+ "note": "Identical page; left draws one Tj per line in order, right draws every word as its own text object in random order (no space characters). No real difference.",
+ "expected_differences": []
+}

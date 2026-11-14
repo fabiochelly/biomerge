@@ -1,0 +1,11 @@
+{
+ "id": "l07_watermark",
+ "group": "layout",
+ "generator": "raw_cases.py (hand-written PDF syntax)",
+ "note": "Diagonal 80pt light-grey 'CONFIDENTIEL' watermark drawn first (under the text), then three paragraphs.",
+ "signal": "The watermark is furniture: big, rotated 45 degrees, grey; it must not be interleaved with the body.",
+ "checks": [],
+ "furniture": [
+  "CONFIDENTIEL"
+ ]
+}

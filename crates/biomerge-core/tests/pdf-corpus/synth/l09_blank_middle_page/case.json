@@ -1,0 +1,9 @@
+{
+ "id": "l09_blank_middle_page",
+ "group": "robust",
+ "generator": "raw_cases.py (hand-written PDF syntax)",
+ "note": "Three pages; the middle one is blank.",
+ "signal": "A blank page adds nothing.",
+ "checks": [],
+ "furniture": []
+}

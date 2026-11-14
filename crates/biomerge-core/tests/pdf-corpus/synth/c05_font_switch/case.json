@@ -1,0 +1,9 @@
+{
+ "id": "c05_font_switch",
+ "group": "coord",
+ "generator": "raw_cases.py (hand-written PDF syntax)",
+ "note": "One paragraph whose middle switches to bold, italic, then Times 13pt (bigger) and back; each run is a separate text object, emitted italic first, then Times, bold, regular.",
+ "signal": "Same baselines and continuous x positions: one paragraph; the 13pt run on the same baseline must not start a new line or heading.",
+ "checks": [],
+ "furniture": []
+}

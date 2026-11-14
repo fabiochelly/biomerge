@@ -1,0 +1,9 @@
+{
+ "id": "c01_shuffled_lines",
+ "group": "coord",
+ "generator": "raw_cases.py (hand-written PDF syntax)",
+ "note": "Two paragraphs; every line is its own BT/ET with an absolute Tm; lines emitted middle first then bottom-up.",
+ "signal": "Vertical position (Tm y) decides order; leading 14pt for 11pt text joins lines; an extra 11pt gap separates the paragraphs.",
+ "checks": [],
+ "furniture": []
+}

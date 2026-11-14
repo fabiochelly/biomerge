@@ -1,0 +1,14 @@
+{
+ "id": "h16_emoji",
+ "group": "script",
+ "generator": "html_cases.py (Chromium print-to-pdf)",
+ "note": "Colour emoji (Noto Color Emoji bitmap glyphs) inside a sentence.",
+ "signal": "Emoji glyphs are Type3/bitmap in Chromium output; ToUnicode should give the code points.",
+ "checks": [
+  {
+   "type": "present",
+   "text": "merci pour votre commande"
+  }
+ ],
+ "furniture": []
+}

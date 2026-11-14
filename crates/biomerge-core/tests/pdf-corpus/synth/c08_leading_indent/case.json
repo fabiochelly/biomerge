@@ -1,0 +1,9 @@
+{
+ "id": "c08_leading_indent",
+ "group": "coord",
+ "generator": "raw_cases.py (hand-written PDF syntax)",
+ "note": "Para 1 and 2 separated by a larger vertical gap (1.9x leading) with no indent; para 3 and 4 start with a 20pt first-line indent at normal leading; then a numbered list and a bullet list with hanging indents and continuation lines.",
+ "signal": "Normal leading (14pt for 11pt) joins lines; a gap > ~1.5 x leading or a first-line indent starts a paragraph; a continuation line aligned with the item text (hanging indent) stays in the item. Bullet glyphs are dropped by the scoring normalisation.",
+ "checks": [],
+ "furniture": []
+}

@@ -11,7 +11,7 @@ use biomerge_core::Side;
 use biomerge_core::diff::{BlockKind, ChangeSpan, DiffOptions, DiffResult, LineSpans, Row, SpanKind, diff_lines_with};
 use biomerge_core::ignore_rules::IgnoreRules;
 use biomerge_core::document::{Document, DocumentError, Edit, Line};
-use biomerge_core::extract::{self, DocFacts, DocFormat, ExtractOptions};
+use biomerge_core::extract::{self, DocFacts, DocFormat, ExtractError, ExtractOptions, PageStart};
 use biomerge_core::json::{self, Format, JsonDoc, JsonOptions, PathMap, Summary};
 use biomerge_core::merge3::has_conflict_markers;
 use biomerge_core::filter::{Filter, FilterOptions};
@@ -36,6 +36,10 @@ use crate::theme::{Chrome, DEFAULT_CODE_SIZE, DocPalette, LinkStyle, Look, Tint,
 use crate::widgets::{self, Badge, PathAction, PathBar};
 
 pub(crate) const GUTTER_PADDING: f32 = 12.0;
+/// The password field of an encrypted PDF.
+const PASSWORD_WIDTH: f32 = 300.0;
+/// Page labels are set smaller than the line numbers, as a margin note.
+const PAGE_LABEL_SCALE: f32 = 0.85;
 pub(crate) const TEXT_PADDING: f32 = 12.0;
 /// Reserved on the right of a pane for the action buttons of a merge's blocks and the wrap marks.
 pub(crate) const ARROW_MARGIN: f32 = 58.0;
@@ -86,6 +90,9 @@ enum Message {
         outcome: Result<Summary, String>,
     },
     Failed(String),
+    /// Encrypted PDFs: for each side, whether it waits for a password, and whether the one
+    /// tried was wrong.
+    NeedPassword([Option<bool>; 2]),
     Picked(usize, PathBuf),
     Styles {
         generation: u64,
@@ -129,10 +136,52 @@ pub struct SideSource {
 }
 
 /// What a side extracted from a document knows about it, for its badge.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct DocumentSide {
     pub format: DocFormat,
     pub facts: DocFacts,
+    /// PDF: the line where each page starts, labelled in the gutter.
+    pub page_starts: Vec<PageStart>,
+}
+
+/// Why a side could not be loaded.
+enum LoadError {
+    Message(String),
+    /// An encrypted PDF: the tab asks for the password.
+    Password { wrong: bool },
+}
+
+/// A PDF password typed in a tab. It lives in memory only, for that tab: never saved, never
+/// printed (its `Debug` hides it), and overwritten when dropped.
+#[derive(Clone, Default)]
+struct Password(String);
+
+impl std::fmt::Debug for Password {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Password(…)")
+    }
+}
+
+impl Drop for Password {
+    fn drop(&mut self) {
+        wipe(&mut self.0);
+    }
+}
+
+/// Overwrites a secret's bytes before its memory goes back to the allocator.
+fn wipe(secret: &mut String) {
+    let mut bytes = std::mem::take(secret).into_bytes();
+    bytes.fill(0);
+    std::hint::black_box(&bytes);
+}
+
+/// The password prompt shown in a pane whose PDF is encrypted.
+#[derive(Debug, Default)]
+struct PasswordPrompt {
+    input: Password,
+    /// The last password tried was wrong.
+    wrong: bool,
+    focus_done: bool,
 }
 
 /// Both panes after a projection: the new documents, the edit that turned each old text into
@@ -407,6 +456,10 @@ pub struct TextTab {
     json_defaults: (JsonOptions, bool),
     /// Sides extracted from word-processing documents.
     documents: [Option<DocumentSide>; 2],
+    /// Passwords of encrypted PDFs, by side, for F5 and option changes; gone with the tab.
+    passwords: [Option<Password>; 2],
+    /// Sides waiting for the password of their PDF.
+    password_prompts: [Option<PasswordPrompt>; 2],
     extract_options: ExtractOptions,
     /// Document tabs wrap by themselves, one paragraph being one line, whatever the setting.
     own_wrap: bool,
@@ -498,6 +551,8 @@ impl TextTab {
             json,
             json_defaults,
             documents: [None, None],
+            passwords: [None, None],
+            password_prompts: [None, None],
             extract_options: extract,
             own_wrap,
             question: None,
@@ -1016,6 +1071,38 @@ impl TextTab {
         self.arrow_rects.iter().find(|(b, t, _)| *b == block && *t == target).map(|(_, _, rect)| rect.center())
     }
 
+    /// The page whose text starts at `line` of a PDF side.
+    fn page_starting_at(&self, side: usize, line: usize) -> Option<u32> {
+        let starts = &self.documents[side].as_ref()?.page_starts;
+        let found = starts.binary_search_by_key(&(line as u32), |start| start.line).ok()?;
+        Some(starts[found].page)
+    }
+
+    /// The page labels of a side's gutter, as `(line, page)`.
+    #[cfg(test)]
+    pub fn page_labels(&self, side: Side) -> Vec<(usize, u32)> {
+        let lines = self.docs.as_ref().map_or(0, |docs| docs[side.index()].len());
+        (0..lines).filter_map(|line| Some((line, self.page_starting_at(side.index(), line)?))).collect()
+    }
+
+    /// Whether a side waits for a PDF password, and if so whether the last one was wrong.
+    #[cfg(test)]
+    pub fn password_prompt(&self, side: Side) -> Option<bool> {
+        self.password_prompts[side.index()].as_ref().map(|prompt| prompt.wrong)
+    }
+
+    /// Stopped before showing anything: on an error, or asking for a password.
+    #[cfg(test)]
+    pub fn is_stopped(&self) -> bool {
+        !self.loading && self.docs.is_none() && (self.error.is_some() || self.password_prompts.iter().any(Option::is_some))
+    }
+
+    /// The tooltip of a side's first badge.
+    #[cfg(test)]
+    pub fn badge_tip(&self, side: Side) -> Option<String> {
+        self.badges(side).into_iter().next().map(|badge| badge.tip)
+    }
+
     #[cfg(test)]
     pub fn badge_texts(&self, side: Side) -> Vec<String> {
         self.badges(side).into_iter().map(|badge| badge.text).collect()
@@ -1076,6 +1163,7 @@ impl TextTab {
         self.question = None;
         self.summary = None;
         self.documents = [None, None];
+        self.password_prompts = [None, None];
         if let Some(json) = &mut self.json {
             json.reset();
         }
@@ -1092,15 +1180,26 @@ impl TextTab {
         let rules = self.rules.clone();
         let allow_missing = self.allow_missing;
         let sources = self.sources.clone();
+        let passwords = self.passwords.clone();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
             type Loaded = (Document, Option<DocumentSide>);
-            let load = |path: &Path, source: &SideSource| -> Result<Loaded, String> {
+            let load = |path: &Path, source: &SideSource, password: &Option<Password>| -> Result<Loaded, LoadError> {
                 if let Some(options) = &source.extract {
-                    let extracted = extract::extract(path, options).map_err(|e| e.to_string())?;
+                    let password = password.as_ref().map(|password| password.0.as_str());
+                    let extracted = extract::extract_with_password(path, options, password).map_err(|error| match error {
+                        ExtractError::PasswordRequired(_) => LoadError::Password { wrong: false },
+                        ExtractError::WrongPassword(_) => LoadError::Password { wrong: true },
+                        error => LoadError::Message(error.to_string()),
+                    })?;
                     let mut doc = Document::from_text(&extracted.text);
                     doc.path = Some(path.to_owned());
-                    Ok((doc, Some(DocumentSide { format: extracted.format, facts: extracted.facts })))
+                    let document = DocumentSide {
+                        format: extracted.format,
+                        facts: extracted.facts,
+                        page_starts: extracted.page_starts,
+                    };
+                    Ok((doc, Some(document)))
                 } else if let Some(doc) = &source.contents {
                     let mut doc = doc.clone();
                     doc.path = Some(path.to_owned());
@@ -1110,10 +1209,13 @@ impl TextTab {
                     doc.path = Some(path.to_owned());
                     Ok((doc, None))
                 } else {
-                    Document::load(path).map(|doc| (doc, None)).map_err(|e: DocumentError| e.to_string())
+                    Document::load(path).map(|doc| (doc, None)).map_err(|e: DocumentError| LoadError::Message(e.to_string()))
                 }
             };
-            let (left, right) = rayon::join(|| load(&paths[0], &sources[0]), || load(&paths[1], &sources[1]));
+            let (left, right) = rayon::join(
+                || load(&paths[0], &sources[0], &passwords[0]),
+                || load(&paths[1], &sources[1], &passwords[1]),
+            );
             let message = match (left, right) {
                 (Ok((left, left_document)), Ok((right, right_document))) => {
                     let documents = [left_document, right_document];
@@ -1150,7 +1252,19 @@ impl TextTab {
                         projection,
                     }
                 }
-                (Err(error), _) | (_, Err(error)) => Message::Failed(error),
+                (left, right) => {
+                    let sides = [left, right];
+                    let failure = sides.iter().find_map(|side| match side {
+                        Err(LoadError::Message(error)) => Some(error.clone()),
+                        _ => None,
+                    });
+                    failure.map(Message::Failed).unwrap_or_else(|| {
+                        Message::NeedPassword(sides.map(|side| match side {
+                            Err(LoadError::Password { wrong }) => Some(wrong),
+                            _ => None,
+                        }))
+                    })
+                }
             };
             let _ = sender.send(message);
             ctx.request_repaint();
@@ -1241,6 +1355,15 @@ impl TextTab {
                 Message::Failed(error) => {
                     self.error = Some(error);
                     self.loading = false;
+                }
+                Message::NeedPassword(sides) => {
+                    self.loading = false;
+                    for (index, wrong) in sides.into_iter().enumerate() {
+                        if wrong == Some(true) {
+                            self.passwords[index] = None;
+                        }
+                        self.password_prompts[index] = wrong.map(|wrong| PasswordPrompt { wrong, ..PasswordPrompt::default() });
+                    }
                 }
                 Message::Projected { job, revisions, outcome } => self.projected(ctx, job, revisions, outcome),
                 Message::Paths { side, revision, map } => {
@@ -2574,7 +2697,10 @@ impl TextTab {
             .as_ref()
             .map_or(4, |d| d[0].len().max(d[1].len()).max(1).ilog10() as usize + 1)
             .max(3);
-        let gutter = line_digits as f32 * char_width + GUTTER_PADDING * 2.0 + if look.metrics.bar_at_edge { 4.0 } else { 0.0 };
+        // PDF sides label the first line of each page ("p. 12") left of the line numbers.
+        let last_page = self.documents.iter().flatten().filter_map(|document| document.page_starts.last()).map(|start| start.page).max();
+        let page_room = last_page.map_or(0.0, |page| (format!("p. {page}").len() as f32 + 1.0) * char_width * PAGE_LABEL_SCALE);
+        let gutter = line_digits as f32 * char_width + page_room + GUTTER_PADDING * 2.0 + if look.metrics.bar_at_edge { 4.0 } else { 0.0 };
         let make_pane = |card: Rect| {
             let rect = Rect::from_x_y_ranges(card.x_range(), view.y_range());
             Pane {
@@ -2596,6 +2722,11 @@ impl TextTab {
         let columns = (((panes[0].text_right - panes[0].text_x) / char_width) as usize).max(8);
         self.geometry = Some(geometry);
 
+        if self.password_prompts.iter().any(Option::is_some) {
+            panes::finish_cards(&painter, look, &cards);
+            self.show_password_prompts(ui, &ctx, chrome, cards);
+            return;
+        }
         if let Some(error) = &self.error {
             panes::finish_cards(&painter, look, &cards);
             painter.text(
@@ -2708,6 +2839,51 @@ impl TextTab {
         }
         if self.summary.is_some() {
             self.show_summary(&ctx, chrome, doc);
+        }
+    }
+
+    /// In each pane whose PDF is encrypted: what is asked, a field and its button. The password
+    /// only goes to this tab's loader.
+    fn show_password_prompts(&mut self, ui: &mut Ui, ctx: &egui::Context, chrome: &UiPalette, cards: [panes::PaneRects; 2]) {
+        let first = self.password_prompts.iter().position(Option::is_some);
+        let mut submitted = false;
+        for side in 0..2 {
+            let area = cards[side].code;
+            let painter = ui.painter_at(area);
+            let Some(prompt) = &mut self.password_prompts[side] else {
+                let waiting = "En attente du mot de passe de l'autre côté";
+                painter.text(area.center(), Align2::CENTER_CENTER, waiting, FontId::proportional(14.0), chrome.text_dim);
+                continue;
+            };
+            let (x, top) = (area.center().x, area.center().y - 70.0);
+            let title = "PDF protégé par un mot de passe";
+            painter.text(pos2(x, top), Align2::CENTER_CENTER, title, widgets::semibold(15.0), chrome.text);
+            let (note, color) = if prompt.wrong {
+                ("Mot de passe incorrect", chrome.error)
+            } else {
+                ("Gardé pour cet onglet seulement, jamais enregistré", chrome.text_dim)
+            };
+            painter.text(pos2(x, top + 24.0), Align2::CENTER_CENTER, note, FontId::proportional(13.0), color);
+            let field = Rect::from_center_size(pos2(x, top + 64.0), vec2(PASSWORD_WIDTH.min(area.width() - 32.0), 34.0));
+            let id = ui.scope_id().with(("pdf-password", side));
+            let label = ["Mot de passe du PDF de gauche", "Mot de passe du PDF de droite"][side];
+            let response = widgets::password_field(ui, chrome, id, field, &mut prompt.input.0, "Mot de passe", label, prompt.wrong);
+            if !prompt.focus_done && first == Some(side) {
+                prompt.focus_done = true;
+                response.request_focus();
+            }
+            let entered = response.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
+            let button = Rect::from_center_size(pos2(x, top + 114.0), vec2(120.0, 32.0));
+            let clicked = ui.put(button, crate::folder_view::primary_button(chrome, "Ouvrir")).clicked();
+            if (entered || clicked) && !prompt.input.0.is_empty() {
+                // The field's undo history keeps copies of what was typed.
+                ctx.data_mut(|data| data.remove::<egui::text_edit::TextEditState>(id));
+                self.passwords[side] = Some(std::mem::take(&mut prompt.input));
+                submitted = true;
+            }
+        }
+        if submitted {
+            self.reload(ctx);
         }
     }
 
@@ -2873,6 +3049,7 @@ impl TextTab {
                 extract: extract::is_supported(&path).then_some(self.extract_options),
                 ..SideSource::default()
             };
+            self.passwords[side] = None;
             self.paths[side] = path;
             if self.sources.iter().any(|source| source.extract.is_some()) {
                 self.own_wrap = true;
@@ -2951,6 +3128,7 @@ impl TextTab {
                 self.paths.swap(0, 1);
                 self.inputs.swap(0, 1);
                 self.sources.swap(0, 1);
+                self.passwords.swap(0, 1);
                 self.reload(ctx);
             }
         }
@@ -2963,7 +3141,11 @@ impl TextTab {
         if let Some(document) = &self.documents[index] {
             let mut tip = vec!["Texte extrait du document : la mise en forme n'est pas comparée".to_owned()];
             tip.extend(document.facts.notices(&self.extract_options));
-            badges.push(Badge::new(document.format.label(), tip.join("\n")));
+            let facts = &document.facts;
+            let badge = Badge::new(document.format.label(), tip.join("\n"));
+            // Pages whose text is not compared must not go unnoticed.
+            let missing = facts.scanned_pages + facts.illegible_pages + facts.unread_pages > 0;
+            badges.push(if missing { badge.warning() } else { badge });
         }
         if let Some(json) = &self.json {
             if let Some(error) = &json.errors[index] {
@@ -3083,6 +3265,7 @@ impl TextTab {
         let view = geometry.view;
         let line_height = geometry.line_height;
         let number_font = FontId::new(self.code_size - 1.0, FontFamily::Monospace);
+        let page_font = FontId::new(self.code_size * PAGE_LABEL_SCALE, FontFamily::Monospace);
         let code_font = FontId::new(self.code_size, FontFamily::Monospace);
         let above = (view.top() - geometry.rows.top()) as f64;
         let below = (geometry.rows.bottom() - view.bottom()) as f64;
@@ -3161,13 +3344,24 @@ impl TextTab {
                 } else {
                     Vec::new()
                 };
+                let number_color = if tint.is_some() { doc.line_number_on } else { doc.line_number };
                 clip.text(
                     pos2(gutter.right() - GUTTER_PADDING, top + line_height / 2.0),
                     Align2::RIGHT_CENTER,
                     line + 1,
                     number_font.clone(),
-                    if tint.is_some() { doc.line_number_on } else { doc.line_number },
+                    number_color,
                 );
+                if let Some(page) = self.page_starting_at(index, line) {
+                    let left = gutter.left() + GUTTER_PADDING + if look.metrics.bar_at_edge { 4.0 } else { 0.0 };
+                    clip.text(
+                        pos2(left, top + line_height / 2.0),
+                        Align2::LEFT_CENTER,
+                        format!("p. {page}"),
+                        page_font.clone(),
+                        number_color.gamma_multiply(0.8),
+                    );
+                }
                 let spans = row.pair.and_then(|p| self.diff.spans.get(p as usize));
                 let whole = match (row.left, row.right, row.block) {
                     (Some(_), None, Some(_)) if classic => Some(doc.delete.text),

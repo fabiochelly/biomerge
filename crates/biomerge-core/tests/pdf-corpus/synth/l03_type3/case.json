@@ -1,0 +1,9 @@
+{
+ "id": "l03_type3",
+ "group": "font",
+ "generator": "raw_cases.py (hand-written PDF syntax)",
+ "note": "Type3 font whose glyphs are drawn boxes, named with standard glyph names via /Differences (no ToUnicode), followed by a normal Helvetica paragraph.",
+ "signal": "Text recoverable only from the glyph names; visually the line is boxes (expected text = the glyph names' letters).",
+ "checks": [],
+ "furniture": []
+}

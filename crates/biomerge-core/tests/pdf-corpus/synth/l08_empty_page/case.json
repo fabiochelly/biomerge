@@ -1,0 +1,9 @@
+{
+ "id": "l08_empty_page",
+ "group": "robust",
+ "generator": "raw_cases.py (hand-written PDF syntax)",
+ "note": "A single page with an empty content stream.",
+ "signal": "No text, no image: the result must be empty (and ideally reported as empty, not as an error).",
+ "checks": [],
+ "furniture": []
+}

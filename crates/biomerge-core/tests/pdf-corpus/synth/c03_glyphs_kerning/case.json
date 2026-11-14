@@ -1,0 +1,18 @@
+{
+ "id": "c03_glyphs_kerning",
+ "group": "coord",
+ "generator": "raw_cases.py (hand-written PDF syntax)",
+ "note": "Title letter-spaced with Tc=3pt; paragraph 1 drawn one glyph per Tj with 0.3-0.8pt gaps inside words; paragraph 2 drawn with TJ kerning (-40..+30/1000 em) inside words and -278/1000 em positioning instead of spaces.",
+ "signal": "Inside a word the gap is <= 0.07 em (or a Tc letter-spacing): no space. Between words the gap is one space width (0.278 em): one space.",
+ "checks": [
+  {
+   "type": "present",
+   "text": "RAPPORT ANNUEL"
+  },
+  {
+   "type": "absent",
+   "text": "R A P P"
+  }
+ ],
+ "furniture": []
+}

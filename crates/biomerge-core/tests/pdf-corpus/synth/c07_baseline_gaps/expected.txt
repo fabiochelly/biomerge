@@ -1,0 +1,7 @@
+Récapitulatif de la commande
+Nom du client Société Dupont
+Date de la commande 12 mars 2026
+Montant total 1 250,00 €
+Mode de paiement virement bancaire
+Un petit écart entre deux objets reste un espace normal dans la phrase.
+Référence : DOSSIER-2026-001

@@ -1,0 +1,9 @@
+{
+ "id": "h19_landscape_page",
+ "group": "layout",
+ "generator": "html_cases.py (Chromium print-to-pdf)",
+ "note": "Portrait page, then a named @page in A4 landscape, then portrait again.",
+ "signal": "Page orientation changes nothing in the text.",
+ "checks": [],
+ "furniture": []
+}

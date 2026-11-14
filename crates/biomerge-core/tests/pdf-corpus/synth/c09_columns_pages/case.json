@@ -1,0 +1,12 @@
+{
+ "id": "c09_columns_pages",
+ "group": "coord",
+ "generator": "raw_cases.py (hand-written PDF syntax)",
+ "note": "Two columns of 22 lines on 1 pages; paragraphs continue from the bottom of column 1 to the top of column 2 and from page 1 to page 2, across a running header and a footer with a page number.",
+ "signal": "Column x-band (gutter 31pt) decides column order; continuation into the next column/page has no paragraph gap; header/footer are repeated top/bottom bands (dropped).",
+ "checks": [],
+ "furniture": [
+  "Rapport annuel 2026",
+  "Confidentiel - page"
+ ]
+}

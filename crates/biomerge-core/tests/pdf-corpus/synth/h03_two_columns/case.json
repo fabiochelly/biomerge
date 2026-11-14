@@ -1,0 +1,9 @@
+{
+ "id": "h03_two_columns",
+ "group": "layout",
+ "generator": "html_cases.py (Chromium print-to-pdf)",
+ "note": "2 CSS columns (column-gap 8mm) of justified paragraphs under a full-width title; paragraphs continue from one column to the next.",
+ "signal": "Column x-bands; paragraph continues at the top of the next column.",
+ "checks": [],
+ "furniture": []
+}

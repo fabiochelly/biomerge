@@ -1,0 +1,28 @@
+{
+ "id": "c11_superscript",
+ "group": "coord",
+ "generator": "raw_cases.py (hand-written PDF syntax)",
+ "note": "Superscript footnote marker and m2 drawn with Ts +4 at 7pt, subscript 2 in H2O with Ts -2, inside one BT; a footnote at the page bottom.",
+ "signal": "Baseline shift (Ts) inside a line is not a new line; the small raised/lowered glyph attaches to the preceding word (no space).",
+ "checks": [
+  {
+   "type": "any",
+   "texts": [
+    "contrat2 signé",
+    "contrat 2 signé",
+    "contrat^2 signé",
+    "contrat²",
+    "contrat^2^"
+   ]
+  },
+  {
+   "type": "any",
+   "texts": [
+    "H2O",
+    "H₂O",
+    "H~2~O"
+   ]
+  }
+ ],
+ "furniture": []
+}

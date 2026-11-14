@@ -1,0 +1,16 @@
+{
+ "id": "h20_invoice_blocks",
+ "group": "layout",
+ "generator": "html_cases.py (Chromium print-to-pdf)",
+ "note": "Invoice: sender block left and invoice block right on the same lines, client line, 2-column table, right-aligned totals with <br>.",
+ "signal": "Expected reads the left block then the right block (block order); a row-by-row reading interleaves them (scored as order errors, but both are defensible). Lines broken by <br> are separate lines.",
+ "checks": [
+  {
+   "type": "sep",
+   "a": "Atelier Martin",
+   "b": "Facture",
+   "kind": "cell"
+  }
+ ],
+ "furniture": []
+}

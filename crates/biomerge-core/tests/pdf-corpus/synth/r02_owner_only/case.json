@@ -1,0 +1,13 @@
+{
+ "id": "r02_owner_only",
+ "group": "robust",
+ "generator": "robust_cases.sh (qpdf/head/python)",
+ "note": "AES-128 encrypted with an empty user password and an owner password; permissions forbid extraction, printing, modification.",
+ "signal": "Opens without a password; text must come out (BioMerge compares, it does not republish).",
+ "checks": [],
+ "furniture": [
+  "Société Exemple - Rapport interne",
+  "Réf. RI-2026-04",
+  "Page "
+ ]
+}

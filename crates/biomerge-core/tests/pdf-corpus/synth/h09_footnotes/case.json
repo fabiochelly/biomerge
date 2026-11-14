@@ -1,0 +1,9 @@
+{
+ "id": "h09_footnotes",
+ "group": "text",
+ "generator": "html_cases.py (Chromium print-to-pdf)",
+ "note": "Two pages, each with two paragraphs carrying superscript note calls and two footnotes at the page bottom.",
+ "signal": "Footnotes follow their page's body; the superscript call sticks to the word before the period.",
+ "checks": [],
+ "furniture": []
+}

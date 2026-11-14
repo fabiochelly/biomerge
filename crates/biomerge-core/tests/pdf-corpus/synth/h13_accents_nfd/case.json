@@ -1,0 +1,15 @@
+{
+ "id": "h13_accents_nfd",
+ "group": "text",
+ "generator": "html_cases.py (Chromium print-to-pdf)",
+ "note": "Same sentence in precomposed (NFC) and decomposed (NFD, base + combining accent) form in the HTML source.",
+ "signal": "After NFC both lines must be identical to the expected; raw output may keep combining marks.",
+ "checks": [
+  {
+   "type": "count",
+   "text": "château",
+   "n": 2
+  }
+ ],
+ "furniture": []
+}

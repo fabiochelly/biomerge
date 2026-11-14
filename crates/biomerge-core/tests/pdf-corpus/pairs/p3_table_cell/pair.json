@@ -1,0 +1,10 @@
+{
+ "id": "p3_table_cell",
+ "note": "One cell changed in a 30-row table.",
+ "expected_differences": [
+  {
+   "left": "Produit 17 4 51,50 €",
+   "right": "Produit 17 4 99,99 €"
+  }
+ ]
+}

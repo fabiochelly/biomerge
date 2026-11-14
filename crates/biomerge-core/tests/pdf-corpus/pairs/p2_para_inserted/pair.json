@@ -1,0 +1,10 @@
+{
+ "id": "p2_para_inserted",
+ "note": "A paragraph inserted on page 1; all following lines and page breaks move.",
+ "expected_differences": [
+  {
+   "left": null,
+   "right": "Un nouvel article est ajouté ici : le vendeur s'engage à informer l'acheteur de tout retard de livraison dans un délai de quarante-huit heures, par courrier électronique ou par téléphone."
+  }
+ ]
+}

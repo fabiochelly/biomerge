@@ -1,0 +1,58 @@
+{
+ "id": "h02_hyphenation",
+ "group": "text",
+ "generator": "html_cases.py (Chromium print-to-pdf)",
+ "note": "Narrow (5.2cm) justified column; long words carry soft hyphens (U+00AD, CSS hyphens: manual) so Chromium breaks them with a visible hyphen; compounds with real hyphens (porte-monnaie, c'est-à-dire...) may break after their hyphen.",
+ "signal": "A hyphen at line end inside a soft-hyphenated word must disappear when joining; a real compound hyphen must stay ('porte-monnaie', not 'portemonnaie').",
+ "checks": [
+  {
+   "type": "present",
+   "text": "porte-monnaie"
+  },
+  {
+   "type": "present",
+   "text": "arc-en-ciel"
+  },
+  {
+   "type": "present",
+   "text": "c'est-à-dire"
+  },
+  {
+   "type": "present",
+   "text": "vis-à-vis"
+  },
+  {
+   "type": "present",
+   "text": "après-midi"
+  },
+  {
+   "type": "present",
+   "text": "grand-mère"
+  },
+  {
+   "type": "present",
+   "text": "extraordinaire"
+  },
+  {
+   "type": "present",
+   "text": "anticonstitutionnellement"
+  },
+  {
+   "type": "present",
+   "text": "développement"
+  },
+  {
+   "type": "present",
+   "text": "administration"
+  },
+  {
+   "type": "present",
+   "text": "responsabilité"
+  },
+  {
+   "type": "present",
+   "text": "incompréhensible"
+  }
+ ],
+ "furniture": []
+}

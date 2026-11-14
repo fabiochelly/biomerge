@@ -1,0 +1,14 @@
+{
+ "id": "l05_rotated_landscape",
+ "group": "layout",
+ "generator": "raw_cases.py (hand-written PDF syntax)",
+ "note": "Page 1: landscape MediaBox with a paragraph and a 90-degree rotated line in the right margin. Page 2: portrait page with /Rotate 90.",
+ "signal": "Rotated text (Tm with 90 degrees) is a separate line; /Rotate does not change the text.",
+ "checks": [
+  {
+   "type": "present",
+   "text": "Texte vertical dans la marge"
+  }
+ ],
+ "furniture": []
+}

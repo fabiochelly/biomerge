@@ -1,0 +1,9 @@
+{
+ "id": "h10_headings",
+ "group": "text",
+ "generator": "html_cases.py (Chromium print-to-pdf)",
+ "note": "h1/h2/h3 headings, bold, italic, bold-italic and monospace inline runs.",
+ "signal": "Font size/weight changes inside a line do not split it; headings are separate lines.",
+ "checks": [],
+ "furniture": []
+}

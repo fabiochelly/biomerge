@@ -1,0 +1,13 @@
+Atelier Martin
+12 rue des Lilas
+75014 Paris
+Facture n° F-2026-118
+Date : 3 février 2026
+Échéance : 5 mars 2026
+Client : Librairie du Centre, 4 place de la Gare, 69002 Lyon
+Désignation Montant HT
+Reliure de 40 ouvrages 640,00 €
+Restauration de couvertures 210,00 €
+Total HT : 850,00 €
+TVA 20 % : 170,00 €
+Total TTC : 1 020,00 €

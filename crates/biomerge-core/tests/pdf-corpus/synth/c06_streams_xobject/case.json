@@ -1,0 +1,9 @@
+{
+ "id": "c06_streams_xobject",
+ "group": "coord",
+ "generator": "raw_cases.py (hand-written PDF syntax)",
+ "note": "One paragraph split across two content streams of the page (Contents array) and a Form XObject drawn with Do; the split falls in the middle of line 2.",
+ "signal": "Visual continuity (same leading, continuous x) decides; stream and XObject boundaries must not break the paragraph.",
+ "checks": [],
+ "furniture": []
+}

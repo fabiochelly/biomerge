@@ -1,0 +1,9 @@
+{
+ "id": "c13_cm_tz",
+ "group": "coord",
+ "generator": "raw_cases.py (hand-written PDF syntax)",
+ "note": "Paragraph 1 drawn inside a 1.5x scaling CTM (cm) with 7.33pt font and Tz 80 horizontal scaling; paragraph 2 drawn inside a CTM rotated 20 degrees.",
+ "signal": "Positions must be computed in device space (CTM x text matrix, Tz): lines of each paragraph keep their leading; the rotated paragraph is still one paragraph.",
+ "checks": [],
+ "furniture": []
+}

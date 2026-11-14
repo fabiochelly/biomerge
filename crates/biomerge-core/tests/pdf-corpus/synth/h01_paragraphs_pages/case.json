@@ -1,0 +1,13 @@
+{
+ "id": "h01_paragraphs_pages",
+ "group": "layout",
+ "generator": "html_cases.py (Chromium print-to-pdf)",
+ "note": "Three-page report: headings, paragraphs split across page breaks, @page running header (left+right) and footer 'Page N / M'.",
+ "signal": "Paragraph continues across page break; header/footer repeated on every page.",
+ "checks": [],
+ "furniture": [
+  "Société Exemple - Rapport interne",
+  "Réf. RI-2026-04",
+  "Page "
+ ]
+}

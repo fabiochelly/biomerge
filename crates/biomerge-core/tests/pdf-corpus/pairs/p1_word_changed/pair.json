@@ -1,0 +1,10 @@
+{
+ "id": "p1_word_changed",
+ "note": "One word changed in one paragraph of a 4-page document with running header and page footer.",
+ "expected_differences": [
+  {
+   "left": "Après plusieurs semaines de négociations, les partenaires sociaux ont trouvé un compromis sur l'organisation du temps de travail. L'accord sera soumis au vote des salariés au début du mois prochain.",
+   "right": "Après plusieurs semaines de négociations, remarquable partenaires sociaux ont trouvé un compromis sur l'organisation du temps de travail. L'accord sera soumis au vote des salariés au début du mois prochain."
+  }
+ ]
+}

@@ -1,0 +1,22 @@
+{
+ "id": "l06_forms_annots",
+ "group": "layout",
+ "generator": "raw_cases.py (hand-written PDF syntax)",
+ "note": "AcroForm text field (value 'Jean Martin' shown by its appearance stream) beside the label 'Nom :'; a FreeText annotation 'Approuvé'; a sticky-note (Text) annotation whose contents are not displayed.",
+ "signal": "Visible = page content + widget/FreeText appearances; the sticky note's contents are hidden (popup).",
+ "checks": [
+  {
+   "type": "present",
+   "text": "Jean Martin"
+  },
+  {
+   "type": "present",
+   "text": "Approuvé"
+  },
+  {
+   "type": "absent",
+   "text": "Note cachée"
+  }
+ ],
+ "furniture": []
+}

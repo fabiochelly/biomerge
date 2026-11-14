@@ -1,0 +1,10 @@
+{
+ "id": "l11_scan_image_only",
+ "group": "scan",
+ "generator": "raw_cases.py (hand-written PDF syntax)",
+ "note": "Scanned page: one 100 dpi grey image, no text operator at all.",
+ "signal": "Expected: empty text, and ideally a 'scanned/needs OCR' signal.",
+ "checks": [],
+ "furniture": [],
+ "expect_scanned": true
+}

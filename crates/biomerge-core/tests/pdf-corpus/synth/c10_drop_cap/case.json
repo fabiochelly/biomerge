@@ -1,0 +1,14 @@
+{
+ "id": "c10_drop_cap",
+ "group": "coord",
+ "generator": "raw_cases.py (hand-written PDF syntax)",
+ "note": "Drop cap: a 40pt bold 'L' drawn first, its baseline on the third line; the first three lines are indented beside it and start with 'orsque'.",
+ "signal": "The cap's right edge touches the first line's start and its height spans 3 lines: it belongs to the first word ('Lorsque').",
+ "checks": [
+  {
+   "type": "present",
+   "text": "Lorsque le soleil"
+  }
+ ],
+ "furniture": []
+}

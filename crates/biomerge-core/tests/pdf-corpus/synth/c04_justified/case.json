@@ -1,0 +1,9 @@
+{
+ "id": "c04_justified",
+ "group": "coord",
+ "generator": "raw_cases.py (hand-written PDF syntax)",
+ "note": "Paragraph 1 justified with Tw word spacing on real spaces (300pt measure); paragraph 2 justified by positioning each word, no space chars (250pt measure, widest gap 7.8pt = 0.71 em).",
+ "signal": "Wide but uniform inter-word gaps on a justified line are still one space; no cell/column split.",
+ "checks": [],
+ "furniture": []
+}

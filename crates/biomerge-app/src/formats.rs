@@ -1,8 +1,8 @@
 //! Settings and words for the formats compared by more than their lines: JSON compared by
-//! structure, word-processing documents compared by their text.
+//! structure, word-processing documents and PDF compared by their text.
 
 use biomerge_core::Side;
-use biomerge_core::extract::{ExtractOptions, Normalization, NotePlacement, Revision};
+use biomerge_core::extract::{ExtractOptions, Normalization, NotePlacement, PdfParagraphs, Revision};
 use biomerge_core::json::{ArrayOrder, JsonError, JsonOptions, KeyOrder};
 
 /// How much typography is folded before documents are compared.
@@ -102,6 +102,12 @@ pub fn load_extract(get: &dyn Fn(&str) -> Option<String>) -> ExtractOptions {
         _ => Typography::Default,
     }
     .rules();
+    options.pdf_paragraphs = match get("doc_pdf_paragraphs").as_deref() {
+        Some("never") => PdfParagraphs::Never,
+        Some("always") => PdfParagraphs::Always,
+        _ => PdfParagraphs::Auto,
+    };
+    options.pdf_headers_footers = flag("doc_pdf_headers_footers", options.pdf_headers_footers);
     options
 }
 
@@ -134,6 +140,16 @@ pub fn store(json: &JsonOptions, structural: bool, extract: &ExtractOptions) -> 
         ("doc_comments", extract.comments.to_string()),
         ("doc_headers_footers", extract.headers_footers.to_string()),
         ("doc_typography", Typography::of(&extract.normalization).key().to_owned()),
+        (
+            "doc_pdf_paragraphs",
+            match extract.pdf_paragraphs {
+                PdfParagraphs::Auto => "auto",
+                PdfParagraphs::Never => "never",
+                PdfParagraphs::Always => "always",
+            }
+            .to_owned(),
+        ),
+        ("doc_pdf_headers_footers", extract.pdf_headers_footers.to_string()),
     ]
 }
 
@@ -156,6 +172,8 @@ mod tests {
             notes: NotePlacement::End,
             comments: true,
             normalization: Normalization::aggressive(),
+            pdf_paragraphs: PdfParagraphs::Never,
+            pdf_headers_footers: true,
             ..ExtractOptions::default()
         };
         let stored: HashMap<&str, String> = store(&json, false, &extract).into_iter().collect();

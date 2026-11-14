@@ -1,0 +1,14 @@
+{
+ "id": "r07_truncated",
+ "group": "robust",
+ "generator": "robust_cases.sh (qpdf/head/python)",
+ "note": "Uncompressed-structure copy truncated at 60 % of its size (no xref, no trailer, last objects missing).",
+ "signal": "Partial text of the surviving pages, or a clean error; never a crash or hang. Expected = full text (recall shows how much survives).",
+ "checks": [],
+ "furniture": [
+  "Société Exemple - Rapport interne",
+  "Réf. RI-2026-04",
+  "Page "
+ ],
+ "partial_ok": true
+}

@@ -1,0 +1,9 @@
+{
+ "id": "c14_tagged_order",
+ "group": "coord",
+ "generator": "raw_cases.py (hand-written PDF syntax)",
+ "note": "Tagged PDF: paragraph A drawn at the top (MCID 0), B below (MCID 1); the structure tree lists B before A.",
+ "signal": "Visual order (A then B) is the expected result; a tool that follows the structure tree outputs B first (noted, scored as an order error).",
+ "checks": [],
+ "furniture": []
+}

@@ -1,0 +1,18 @@
+{
+ "id": "h15_cjk",
+ "group": "script",
+ "generator": "html_cases.py (Chromium print-to-pdf)",
+ "note": "Chinese, Japanese and Korean paragraphs (Noto CJK / Source Han fonts, Type0 CID).",
+ "signal": "No spaces inserted between CJK ideographs.",
+ "checks": [
+  {
+   "type": "present",
+   "text": "今天天气很好，我们去公园散步吧。"
+  },
+  {
+   "type": "present",
+   "text": "東京は日本の首都です。桜の季節はとても美しい。"
+  }
+ ],
+ "furniture": []
+}

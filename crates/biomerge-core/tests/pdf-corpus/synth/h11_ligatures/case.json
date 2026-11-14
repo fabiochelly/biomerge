@@ -1,0 +1,30 @@
+{
+ "id": "h11_ligatures",
+ "group": "text",
+ "generator": "html_cases.py (Chromium print-to-pdf)",
+ "note": "Same sentence in Liberation Serif, Libertinus Serif (standard fi/fl/ffi/ff ligatures) and Libertinus with discretionary ligatures.",
+ "signal": "Ligature glyphs must come out as their letters (fi, ffi...), not U+FB01 or nothing.",
+ "checks": [
+  {
+   "type": "count",
+   "text": "officiers",
+   "n": 3
+  },
+  {
+   "type": "count",
+   "text": "efficacité",
+   "n": 3
+  },
+  {
+   "type": "count",
+   "text": "affligeante",
+   "n": 3
+  },
+  {
+   "type": "count",
+   "text": "flux",
+   "n": 3
+  }
+ ],
+ "furniture": []
+}

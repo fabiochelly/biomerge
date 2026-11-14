@@ -1,0 +1,15 @@
+{
+ "id": "r01_encrypted_user",
+ "group": "robust",
+ "generator": "robust_cases.sh (qpdf/head/python)",
+ "note": "AES-256 encrypted, user password 'secret' required to open.",
+ "signal": "Without the password: a clear 'encrypted / password required' error (not garbage, not a crash). The harness also runs once with the password.",
+ "checks": [],
+ "furniture": [
+  "Société Exemple - Rapport interne",
+  "Réf. RI-2026-04",
+  "Page "
+ ],
+ "password": "secret",
+ "expect_error": "encrypted"
+}

@@ -26,10 +26,12 @@ Comparaison de fichiers et de dossiers, et fusion à 3 voies, en Rust pur. L'obj
 - `1.0` et `1`, `é` et `é` sont égaux, sans aucune perte de précision sur les grands nombres. Les clés en double sont conservées.
 - Chemin JSON de la ligne courante, liste des changements par chemin, réparation des virgules après un transfert de bloc.
 
-**Documents Word et OpenDocument**
+**Documents Word, OpenDocument et PDF**
 - Les fichiers `.docx` et `.odt` sont comparés par leur texte, en lecture seule : un paragraphe par ligne, avec titres, listes, tableaux et notes en Markdown.
 - Le texte final des modifications suivies est affiché par défaut ; le texte d'origine est disponible en option.
-- Ce qui n'est pas comparé (mise en forme, images, commentaires…) est signalé.
+- Les PDF aussi : paragraphes recollés là où le texte est de la prose, en-têtes, pieds et numéros de page retirés, numéro de page discret dans la marge ; un saut de page déplacé ne fait pas de différence.
+- Un PDF protégé demande son mot de passe dans le volet ; il reste en mémoire pour l'onglet, jamais enregistré.
+- Ce qui n'est pas comparé (mise en forme, images, commentaires, pages scannées ou illisibles…) est signalé.
 
 **Dossiers**
 - Comparaison parallèle de deux arborescences, avec respect de `.gitignore` en option et filtre par nom (`*.rs -target/ -*.lock`).
@@ -249,7 +251,7 @@ merge-tool-cmd = biomerge-svn-merge
 ## Développement
 
 Le projet est un espace de travail Cargo en deux crates :
-- `crates/biomerge-core` : le moteur, sans interface graphique (comparaison, fusion, JSON, extraction de documents, dossiers) ;
+- `crates/biomerge-core` : le moteur, sans interface graphique (comparaison, fusion, JSON, extraction de documents et de PDF, dossiers) ;
 - `crates/biomerge-app` : l'interface, en egui avec glow.
 
 ```sh

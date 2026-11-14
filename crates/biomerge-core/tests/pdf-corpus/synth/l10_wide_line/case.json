@@ -1,0 +1,9 @@
+{
+ "id": "l10_wide_line",
+ "group": "layout",
+ "generator": "raw_cases.py (hand-written PDF syntax)",
+ "note": "One line of 2388 characters on a 11784pt-wide page.",
+ "signal": "One single line.",
+ "checks": [],
+ "furniture": []
+}

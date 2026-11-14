@@ -1,0 +1,10 @@
+{
+ "id": "p7_scrambled_word_changed",
+ "note": "Both sides drawn word by word in random order (different shuffles); one word changed in paragraph 4.",
+ "expected_differences": [
+  {
+   "left": "Le contrat prévoit une période d'essai de deux mois, renouvelable une fois avec l'accord écrit des deux parties. Pendant cette période, chacune peut mettre fin à la relation sans indemnité.",
+   "right": "Le contrat prévoit une période d'essai de trois mois, renouvelable une fois avec l'accord écrit des deux parties. Pendant cette période, chacune peut mettre fin à la relation sans indemnité."
+  }
+ ]
+}

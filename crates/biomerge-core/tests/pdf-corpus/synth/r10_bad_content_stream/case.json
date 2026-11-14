@@ -1,0 +1,14 @@
+{
+ "id": "r10_bad_content_stream",
+ "group": "robust",
+ "generator": "robust_cases.sh (qpdf/head/python)",
+ "note": "Valid file structure; the first page's content stream has junk operators (unbalanced strings/arrays, stray ET) in the middle of the text.",
+ "signal": "Keep what can be read, no crash. Expected = original text (recall shows how much survives).",
+ "checks": [],
+ "furniture": [
+  "Société Exemple - Rapport interne",
+  "Réf. RI-2026-04",
+  "Page "
+ ],
+ "partial_ok": true
+}
